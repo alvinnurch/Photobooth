@@ -96,7 +96,9 @@ video{width:100%;height:100%;object-fit:cover;transform:scaleX(var(--mirror,-1))
 #donPick,#donQr{display:flex;flex-direction:column;gap:12px}
 #donQr{align-items:center;text-align:center}
 #donQr .row{justify-content:center}
-#qrisCanvas{width:min(260px,38vh,60vw);height:auto;aspect-ratio:1;background:#fff;border-radius:12px;align-self:center}
+#qrisCanvas{background:#fff;border-radius:8px;align-self:center;image-rendering:pixelated;image-rendering:crisp-edges}
+.test-banner{background:var(--warn);color:#2a1d00;font-weight:700;font-size:14px;padding:10px 12px;border-radius:10px;line-height:1.4}
+.qr-diag{font-size:12px!important;color:var(--muted);margin:0;font-family:ui-monospace,monospace}
 .qris-amt{font-family:var(--display);font-weight:800;font-size:32px;color:var(--gold);text-align:center}
 .don-err{color:var(--bad);margin:0;min-height:1em;font-size:15px}
 .bar{height:4px;background:var(--line);border-radius:4px;overflow:hidden}
@@ -203,8 +205,10 @@ video{width:100%;height:100%;object-fit:cover;transform:scaleX(var(--mirror,-1))
       </div>
       <div id="donQr" hidden>
         <div class="qris-amt" id="qrisAmt"></div>
+        <div class="test-banner" id="testBanner" hidden>MODE UJI: QR ini tidak bisa dibayar dengan aplikasi bank sungguhan. Ketuk "Simulasikan bayar (uji)" untuk mencoba alurnya.</div>
         <canvas id="qrisCanvas" width="600" height="600" aria-label="Kode QRIS"></canvas>
-        <p class="don-lead">Scan dengan m-banking atau e-wallet apa pun yang mendukung QRIS.</p>
+        <p class="don-lead">Scan dengan m-banking atau e-wallet apa pun yang mendukung QRIS. Terangkan layar tablet bila sulit terbaca.</p>
+        <p class="qr-diag" id="qrDiag"></p>
         <div class="row">
           <button class="btn" id="changeAmt">Ganti nominal</button>
           <button class="btn" id="simPay" hidden>Simulasikan bayar (uji)</button>
@@ -220,7 +224,7 @@ video{width:100%;height:100%;object-fit:cover;transform:scaleX(var(--mirror,-1))
     </div>
     <div class="row">
       <button class="btn primary" id="doneBtn">Selesai</button>
-      <button class="btn" id="reprintBtn">Cetak ulang</button>
+      <button class="btn" id="reprintBtn">Cetak lagi</button>
       <button class="btn" id="cashBtn" hidden>Cetak tanpa QRIS</button>
     </div>
     <div class="row" id="cashPinRow" hidden>
@@ -713,6 +717,7 @@ function newCode(){
 const queue = []; let pumping = false; let current = null;
 function setNet(state, text){ $("netDot").className = "dot " + state; $("netText").textContent = text; }
 function refreshNet(){
+  if (IS_IOS && IS_STANDALONE) return setNet("bad", "Buka lewat Safari agar bisa mencetak");
   if (!S.scriptUrl) return setNet("warn", "QR nonaktif");
   if (queue.length) return setNet("warn", "Antre " + queue.length + " foto");
   setNet("ok", "Tersambung");
@@ -752,7 +757,8 @@ function printPhoto(dataUrl, paper = lastPaper){
   for (let i = 0; i < n; i++){
     const img = new Image(); img.alt = "";
     img.onload = () => { if (++loaded === n) setTimeout(() => {
-      try { window.print(); setPr("ok", n + " lembar dikirim ke printer."); } catch(e) { setPr("bad", "Dialog cetak tidak terbuka."); }
+      try { window.print(); setPr("ok", IS_IOS ? "Dialog cetak dibuka. Tidak muncul? Ketuk Cetak lagi." : n + " lembar dikirim ke printer."); }
+    catch(e) { setPr("bad", "Dialog cetak tidak terbuka. Ketuk Cetak lagi."); }
     }, 250); };
     img.src = dataUrl; area.append(img);
   }
@@ -760,6 +766,12 @@ function printPhoto(dataUrl, paper = lastPaper){
 
 /* ---------- Bunyi ---------- */
 let actx = null;
+const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const IS_STANDALONE = navigator.standalone === true || matchMedia("(display-mode: standalone)").matches;
+/* iPad/iPhone hanya mengizinkan suara yang "dibuka" lewat sentuhan langsung. */
+document.addEventListener("pointerdown", () => {
+  try { actx = actx || new (window.AudioContext || window.webkitAudioContext)(); if (actx.state === "suspended") actx.resume(); } catch(e) {}
+}, {passive:true});
 function beep(freq, dur){
   if (!S.sound) return;
   try{
@@ -889,9 +901,10 @@ $("showQris").onclick = async () => {
   try{
     const r = await api({action:"qris", code:don.code, amount:amt});
     if (r.paid){ donationPaid(); return; }
-    drawQris(r.qr);
+    const chk = drawQris(r.qr);
     $("qrisAmt").textContent = rupiah(r.amount);
-    $("simPay").hidden = !r.test;
+    $("simPay").hidden = !r.test; $("testBanner").hidden = !r.test;
+    if (!chk.ok) $("donErr").textContent = "Kode dari Xendit tidak dikenali sebagai QRIS. Lihat log eksekusi Apps Script, lalu kirimkan ke pengembang.";
     $("donPick").hidden = true; $("donQr").hidden = false;
     don.exp = r.exp; setPay("warn", "Menunggu pembayaran…");
     startHold(clamp(Math.round((r.exp - Date.now()) / 1000), 60, 1800));
@@ -900,12 +913,37 @@ $("showQris").onclick = async () => {
     $("donErr").textContent = e.message.includes("Failed to fetch") ? "Tidak tersambung ke internet. Coba lagi, atau pakai Cetak tanpa QRIS." : e.message;
   }finally{ btn.disabled = false; btn.textContent = "Tampilkan QRIS"; }
 };
+/* Cek format QRIS (EMVCo): diawali 000201 dan diakhiri 6304 + CRC16-CCITT. */
+function qrisCheck(text){
+  if (!/^000201/.test(text)) return {ok:false, why:"tidak diawali 000201"};
+  const i = text.lastIndexOf("6304");
+  if (i < 0 || i !== text.length - 8) return {ok:false, why:"tidak ada CRC di akhir"};
+  let crc = 0xFFFF;
+  for (let k = 0; k < i + 4; k++){
+    crc ^= text.charCodeAt(k) << 8;
+    for (let b = 0; b < 8; b++) crc = (crc & 0x8000) ? ((crc << 1) ^ 0x1021) & 0xFFFF : (crc << 1) & 0xFFFF;
+  }
+  const want = crc.toString(16).toUpperCase().padStart(4, "0");
+  return text.slice(i + 4).toUpperCase() === want ? {ok:true} : {ok:false, why:"CRC tidak cocok"};
+}
 function drawQris(text){
   const q = qrcode(0, "M"); q.addData(text); q.make();
-  const n = q.getModuleCount(), c = $("qrisCanvas"), g = c.getContext("2d");
-  const quiet = 4, cell = Math.floor(c.width / (n + quiet*2)), off = Math.floor((c.width - cell*n) / 2);
+  const n = q.getModuleCount(), quiet = 4, total = n + quiet*2;
+  const c = $("qrisCanvas"), g = c.getContext("2d");
+  // Ukuran tampil, lalu kotak QR dibulatkan ke piksel fisik utuh agar tepinya tajam.
+  const dpr = window.devicePixelRatio || 1;
+  const cssSize = Math.min(380, innerHeight * .5, innerWidth * .6);
+  const cell = Math.max(2, Math.floor(cssSize * dpr / total));
+  c.width = c.height = cell * total;
+  c.style.width = c.style.height = (c.width / dpr) + "px";
+  g.imageSmoothingEnabled = false;
   g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height); g.fillStyle = "#000";
-  for (let r = 0; r < n; r++) for (let k = 0; k < n; k++) if (q.isDark(r, k)) g.fillRect(off + k*cell, off + r*cell, cell, cell);
+  for (let r = 0; r < n; r++) for (let k = 0; k < n; k++)
+    if (q.isDark(r, k)) g.fillRect((k + quiet) * cell, (r + quiet) * cell, cell, cell);
+  const chk = qrisCheck(text);
+  $("qrDiag").textContent = (chk.ok ? "QRIS valid" : "Kode bukan QRIS yang valid (" + chk.why + ")") +
+    " · " + text.length + " karakter · " + n + "×" + n;
+  return chk;
 }
 let polling = false;
 async function pollPayment(){
@@ -1035,6 +1073,7 @@ $("sleep").addEventListener("click", e => { e.stopPropagation(); wake(); });
 ["pointerdown", "touchstart", "keydown"].forEach(ev => document.addEventListener(ev, () => { if (!sleeping) resetIdle(); }, {passive:true, capture:true}));
 
 applySettings(); loadTemplates(); startCamera(); keepAwake(); resetIdle();
+
 })();
 </script>
 </body>
