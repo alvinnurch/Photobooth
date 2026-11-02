@@ -56,6 +56,15 @@ video{width:100%;height:100%;object-fit:cover;transform:scaleX(var(--mirror,-1))
   color:var(--paper);text-shadow:0 8px 60px rgba(0,0,0,.6);pointer-events:none;z-index:8}
 .count span{animation:pop .9s ease-out both}
 @keyframes pop{from{transform:scale(1.6);opacity:0}30%{opacity:1}to{transform:scale(.9);opacity:.9}}
+.sleep{position:fixed;inset:0;z-index:15;background:radial-gradient(120% 90% at 50% 40%,#231e52 0%,var(--ink) 70%);display:grid;place-items:center;cursor:pointer;
+  padding:calc(24px + env(safe-area-inset-top,0px)) max(16px,env(safe-area-inset-right,0px)) calc(24px + env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px))}
+.sleep-in{display:flex;align-items:center;justify-content:center;gap:clamp(24px,5vw,64px);flex-wrap:wrap;text-align:center;max-width:100%}
+#sleepPrev{max-height:min(66vh,560px);max-width:min(80vw,420px);border-radius:10px;box-shadow:0 24px 70px rgba(0,0,0,.55);transform:rotate(-3deg);animation:drift 7s ease-in-out infinite}
+.sleep-txt{display:flex;flex-direction:column;gap:12px;align-items:center;max-width:420px;min-width:0}
+.sleep-txt h2{font-family:var(--display);font-weight:800;font-size:clamp(30px,5vw,56px);line-height:1.05;margin:0;text-wrap:balance}
+.sleep-cta{font-family:var(--display);font-weight:600;font-size:clamp(20px,3vw,30px);color:var(--gold);margin:0;animation:breathe 2.4s ease-in-out infinite}
+.sleep-sub{color:var(--muted);margin:0;font-size:15px}
+@keyframes drift{50%{transform:rotate(2deg) translateY(-10px)}}
 .pose{position:fixed;left:50%;transform:translateX(-50%);top:calc(78px + env(safe-area-inset-top,0px));z-index:7;display:flex;flex-direction:column;align-items:center;gap:10px;pointer-events:none}
 .pose b{font-family:var(--display);font-size:clamp(20px,3.4vw,32px);background:rgba(20,17,43,.75);padding:8px 20px;border-radius:999px;border:1px solid var(--line)}
 .shots{display:flex;gap:8px}
@@ -134,7 +143,7 @@ video{width:100%;height:100%;object-fit:cover;transform:scaleX(var(--mirror,-1))
   #printArea img{display:block;width:var(--pw,4in);height:var(--ph,6in);object-fit:contain;break-after:page;page-break-after:always}
   #printArea img:last-child{break-after:auto;page-break-after:auto}
 }
-@media (prefers-reduced-motion:reduce){.shutter,.count span,.flash.on{animation:none}}
+@media (prefers-reduced-motion:reduce){.shutter,.count span,.flash.on,#sleepPrev,.sleep-cta{animation:none}}
 </style>
 </head>
 <body>
@@ -165,6 +174,16 @@ video{width:100%;height:100%;object-fit:cover;transform:scaleX(var(--mirror,-1))
   <div class="hint" id="hint">Ketuk untuk berfoto</div>
 </footer>
 
+<div class="sleep" id="sleep" hidden>
+  <div class="sleep-in">
+    <img id="sleepPrev" alt="Contoh hasil cetak">
+    <div class="sleep-txt">
+      <h2 id="sleepTitle">Foto Booth</h2>
+      <p class="sleep-cta">Ketuk layar untuk berfoto</p>
+      <p class="sleep-sub">Contoh hasil cetak</p>
+    </div>
+  </div>
+</div>
 <div class="pose" id="pose" hidden><b id="poseText"></b><div class="shots" id="shots"></div></div>
 <div class="count" id="count" hidden></div>
 <div class="flash" id="flash"></div>
@@ -271,6 +290,8 @@ video{width:100%;height:100%;object-fit:cover;transform:scaleX(var(--mirror,-1))
         <div class="f"><label for="sCount">Hitung mundur (detik)</label><input type="number" id="sCount" min="0" max="10"></div>
         <div class="f"><label for="sHold">Layar hasil (detik)</label><input type="number" id="sHold" min="5" max="120"></div>
       </div>
+      <div class="f"><label for="sIdle">Mode tidur setelah diam (detik)</label><input type="number" id="sIdle" min="0" max="600">
+        <small>Kamera dimatikan dan layar menampilkan contoh hasil cetak. Ketuk sekali untuk bangun. Isi 0 untuk mematikan mode tidur.</small></div>
       <div class="two">
         <div class="f"><label for="sPoseDelay">Jeda antar pose (detik)</label><input type="number" id="sPoseDelay" min="1" max="10"></div>
         <div class="f"><label for="sStripShots">Jumlah foto di strip bawaan</label><input type="number" id="sStripShots" min="2" max="4"></div>
@@ -302,7 +323,7 @@ const $ = id => document.getElementById(id);
 /* ---------- Pengaturan (tersimpan di perangkat ini) ---------- */
 const DEFAULTS = {
   title:"Milad Fakultas", sub:"Foto kenangan bersama", date:"", accent:"#1E2A78", bg:"#FFFFFF",
-  scriptUrl:"", camId:"", countdown:3, hold:15, autoPrint:true, mirror:true, sound:true, pin:"", frame:"", activeTpl:"", stripShots:3, poseDelay:3, copies:2, stripPaper:"2x6", donate:false, amounts:"5000, 10000, 20000"
+  scriptUrl:"", camId:"", countdown:3, hold:15, autoPrint:true, mirror:true, sound:true, pin:"", frame:"", activeTpl:"", stripShots:3, poseDelay:3, copies:2, stripPaper:"2x6", donate:false, amounts:"5000, 10000, 20000", idle:30
 };
 let S = {...DEFAULTS};
 try { Object.assign(S, JSON.parse(localStorage.getItem("pb-settings") || "{}")); } catch(e) {}
@@ -755,7 +776,7 @@ let busy = false, lastDataUrl = "", holdTimer = null;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 async function shoot(){
-  if (busy || !$("panel").hidden || !$("result").hidden) return;
+  if (busy || sleeping || !$("panel").hidden || !$("result").hidden) return;
   if (!video.videoWidth){ startCamera(); return; }
   busy = true;
   $("bottom").hidden = true;
@@ -818,7 +839,7 @@ function showResult(){
 }
 function closeResult(){
   clearTimeout(holdTimer); stopPoll(); current = null; don = null;
-  $("result").hidden = true; $("bottom").hidden = false;
+  $("result").hidden = true; $("bottom").hidden = false; resetIdle();
 }
 $("doneBtn").onclick = closeResult;
 $("reprintBtn").onclick = () => { if (lastDataUrl) printPhoto(lastDataUrl, lastPaper); startHold(+S.hold || 15); };
@@ -927,6 +948,7 @@ $("cashOk").onclick = () => {
 $("stage").addEventListener("click", shoot);
 $("shutter").addEventListener("click", e => { e.stopPropagation(); shoot(); });
 document.addEventListener("keydown", e => {
+  if (sleeping){ e.preventDefault(); wake(); return; }
   if (!$("panel").hidden) return;
   if ([" ", "Enter", "AudioVolumeUp", "AudioVolumeDown", "VolumeUp", "VolumeDown", "MediaPlayPause"].includes(e.key)){
     e.preventDefault(); if (!$("result").hidden){ if (!(don && !don.paid)) closeResult(); } else shoot();
@@ -937,7 +959,7 @@ document.addEventListener("keydown", e => {
 function fillForm(){
   $("sTitle").value = S.title; $("sSub").value = S.sub; $("sDate").value = S.date;
   $("sAccent").value = S.accent; $("sBg").value = S.bg; $("sUrl").value = S.scriptUrl;
-  $("sCount").value = S.countdown; $("sPoseDelay").value = S.poseDelay; $("sCopies").value = S.copies; $("sDonate").checked = S.donate; $("sAmounts").value = S.amounts; $("sStripPaper").value = S.stripPaper; $("sStripShots").value = S.stripShots; $("sHold").value = S.hold; $("sPrint").checked = S.autoPrint;
+  $("sCount").value = S.countdown; $("sPoseDelay").value = S.poseDelay; $("sCopies").value = S.copies; $("sIdle").value = S.idle; $("sDonate").checked = S.donate; $("sAmounts").value = S.amounts; $("sStripPaper").value = S.stripPaper; $("sStripShots").value = S.stripShots; $("sHold").value = S.hold; $("sPrint").checked = S.autoPrint;
   $("sMirror").checked = S.mirror; $("sSound").checked = S.sound; $("sPin").value = S.pin; $("sCam").value = S.camId;
   $("stats").textContent = "Foto diambil di perangkat ini: " + counter + (queue.length ? " · menunggu unggah: " + queue.length : "");
 }
@@ -949,7 +971,7 @@ function openPanel(){
   fillForm(); renderTplList();
 }
 $("gear").addEventListener("click", e => { e.stopPropagation(); openPanel(); });
-$("closePanel").onclick = () => $("panel").hidden = true;
+$("closePanel").onclick = () => { $("panel").hidden = true; resetIdle(); };
 $("pinOk").onclick = () => {
   if ($("pinTry").value === S.pin){ $("pinGate").hidden = true; $("settingsBody").hidden = false; }
   else $("pinErr").textContent = "PIN salah.";
@@ -970,10 +992,10 @@ $("settingsForm").onsubmit = e => {
     title:$("sTitle").value.trim(), sub:$("sSub").value.trim(), date:$("sDate").value.trim(),
     accent:$("sAccent").value.trim() || DEFAULTS.accent, bg:$("sBg").value.trim() || DEFAULTS.bg,
     scriptUrl:$("sUrl").value.trim().replace(/\?.*$/, ""), countdown:Math.max(0, Math.min(10, +$("sCount").value || 0)),
-    hold:Math.max(5, Math.min(120, +$("sHold").value || 15)), poseDelay:clamp(+$("sPoseDelay").value || 3, 1, 10), stripShots:clamp(+$("sStripShots").value || 3, 2, 4), copies:clamp(+$("sCopies").value || 1, 1, 5), donate:$("sDonate").checked, amounts:$("sAmounts").value, stripPaper:$("sStripPaper").value, autoPrint:$("sPrint").checked,
+    hold:Math.max(5, Math.min(120, +$("sHold").value || 15)), poseDelay:clamp(+$("sPoseDelay").value || 3, 1, 10), stripShots:clamp(+$("sStripShots").value || 3, 2, 4), copies:clamp(+$("sCopies").value || 1, 1, 5), idle:clamp(+$("sIdle").value || 0, 0, 600), donate:$("sDonate").checked, amounts:$("sAmounts").value, stripPaper:$("sStripPaper").value, autoPrint:$("sPrint").checked,
     mirror:$("sMirror").checked, sound:$("sSound").checked, pin:$("sPin").value, camId:$("sCam").value
   });
-  saveSettings(); applySettings(); applyGuide(); $("panel").hidden = true;
+  saveSettings(); applySettings(); applyGuide(); $("panel").hidden = true; resetIdle();
   if (camChanged) startCamera();
   pump();
 };
@@ -990,7 +1012,29 @@ async function keepAwake(){ try { await navigator.wakeLock?.request("screen"); }
 document.addEventListener("visibilitychange", () => { if (!document.hidden) keepAwake(); });
 document.addEventListener("click", () => { if (!document.fullscreenElement) document.documentElement.requestFullscreen?.().catch(()=>{}); }, {once:true});
 
-applySettings(); loadTemplates(); startCamera(); keepAwake();
+/* ---------- Mode tidur ---------- */
+let idleTimer = null, sleeping = false;
+function canSleep(){ return !busy && !sleeping && $("result").hidden && $("panel").hidden && +S.idle > 0; }
+function resetIdle(){
+  clearTimeout(idleTimer);
+  if (+S.idle > 0) idleTimer = setTimeout(() => { if (canSleep()) goSleep(); else resetIdle(); }, S.idle * 1000);
+}
+function goSleep(){
+  sleeping = true;
+  stream?.getTracks().forEach(t => t.stop()); stream = null; video.srcObject = null;
+  $("sleepTitle").textContent = (S.title || "Foto Booth").replace(/-/g, "\u2011");
+  try { $("sleepPrev").src = sampleSheet(layout()).toDataURL("image/jpeg", .75); } catch(e) {}
+  $("sleep").hidden = false;
+}
+async function wake(){
+  if (!sleeping) return;
+  sleeping = false; $("sleep").hidden = true;
+  await startCamera(); resetIdle();
+}
+$("sleep").addEventListener("click", e => { e.stopPropagation(); wake(); });
+["pointerdown", "touchstart", "keydown"].forEach(ev => document.addEventListener(ev, () => { if (!sleeping) resetIdle(); }, {passive:true, capture:true}));
+
+applySettings(); loadTemplates(); startCamera(); keepAwake(); resetIdle();
 })();
 </script>
 </body>
