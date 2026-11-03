@@ -146,7 +146,7 @@ video{width:100%;height:100%;object-fit:cover;transform:scaleX(var(--mirror,-1))
   html,body{background:#fff!important;height:auto;overflow:visible}
   body>*:not(#printArea){display:none!important}
   #printArea{display:block}
-  #printArea img{display:block;width:var(--pw,4in);height:var(--ph,6in);object-fit:contain;break-after:page;page-break-after:always}
+  #printArea img{display:block;width:var(--pw,4in);height:var(--ph,6in);object-fit:contain;image-rendering:pixelated;break-after:page;page-break-after:always}
   #printArea img:last-child{break-after:auto;page-break-after:auto}
 }
 @media (prefers-reduced-motion:reduce){.print-cta,.shutter,.count span,.flash.on,#sleepPrev,.sleep-cta{animation:none}}
@@ -308,8 +308,14 @@ video{width:100%;height:100%;object-fit:cover;transform:scaleX(var(--mirror,-1))
       </div>
       <div class="two">
         <div class="f"><label for="sCopies">Jumlah cetak per sesi</label><input type="number" id="sCopies" min="1" max="5"></div>
-        <div class="f"><label for="sStripPaper">Kertas untuk strip</label>
-          <select id="sStripPaper"><option value="2x6">2×6 inci (1 strip)</option><option value="4x6">4×6 inci, strip di tengah</option></select></div>
+        <div class="f"><label for="sPrintMode">Jenis printer</label>
+          <select id="sPrintMode"><option value="color">Berwarna (foto, AirPrint)</option><option value="t58">Termal 58 mm (hitam-putih)</option><option value="t80">Termal 80 mm (hitam-putih)</option></select>
+          <small>Termal: hasil diubah ke hitam-putih berpola titik, selebar gulungan kertas. Unduhan digital lewat QR tetap berwarna.</small></div>
+        <div class="f" id="thermalRow"><label for="sThermalBright">Kecerahan termal</label>
+          <select id="sThermalBright"><option value="-20">Lebih gelap</option><option value="0">Normal</option><option value="20">Lebih terang</option><option value="40">Paling terang</option></select></div>
+        <div class="f"><label for="sStripPaper">Kertas untuk strip (printer berwarna)</label>
+          <select id="sStripPaper"><option value="2x6">2×6 inci (1 strip)</option><option value="4x6">4R (4×6 inci), 1 strip di tengah</option><option value="4x6x2">4R (4×6 inci), 2 strip berdampingan</option></select>
+          <small>2 strip berdampingan: setiap lembar berisi 2 strip kembar, digunting di tengah. Jumlah cetak 2 berarti 4 strip.</small></div>
       </div>
       <label class="check"><input type="checkbox" id="sPrint"> Cetak otomatis setelah foto diambil</label>
       <label class="check"><input type="checkbox" id="sMirror"> Hasil dicerminkan seperti di layar</label>
@@ -333,7 +339,7 @@ const $ = id => document.getElementById(id);
 /* ---------- Pengaturan (tersimpan di perangkat ini) ---------- */
 const DEFAULTS = {
   title:"Milad Fakultas", sub:"Foto kenangan bersama", date:"", accent:"#1E2A78", bg:"#FFFFFF",
-  scriptUrl:"", camId:"", countdown:3, hold:15, autoPrint:true, mirror:true, sound:true, pin:"", frame:"", activeTpl:"", stripShots:3, poseDelay:3, copies:2, stripPaper:"2x6", donate:false, amounts:"5000, 10000, 20000", idle:30
+  scriptUrl:"", camId:"", countdown:3, hold:15, autoPrint:true, mirror:true, sound:true, pin:"", frame:"", activeTpl:"", stripShots:3, poseDelay:3, copies:2, stripPaper:"2x6", printMode:"color", thermalBright:0, donate:false, amounts:"5000, 10000, 20000", idle:30
 };
 let S = {...DEFAULTS};
 try { Object.assign(S, JSON.parse(localStorage.getItem("pb-settings") || "{}")); } catch(e) {}
@@ -585,18 +591,96 @@ function composeUnit(photos, qrText, L){
 
 /* Halaman cetak. Strip: satu strip per kertas, di kertas 2x6 inci,
    atau di tengah kertas 4R bila printer hanya punya ukuran 4x6. */
-function paperOf(L){
-  if (L.kind !== "strip") return {w:4, h:6};
-  return S.stripPaper === "4x6" ? {w:4, h:6} : {w:2, h:6};
+/* ---------- Cetak termal ----------
+   Printer termal: hitam-putih, 203 dpi (8 titik/mm), lebar gulungan 58 atau 80 mm.
+   Gambar diubah ke hitam-putih dengan dithering Floyd–Steinberg, tepat seukuran titik printer. */
+const THERMAL = { t58: {paper:58, print:48}, t80: {paper:80, print:72} };
+const DOTS_PER_MM = 8;
+let lastQrText = "";
+const isThermal = () => !!THERMAL[S.printMode];
+function thermalize(unit, L){
+  const t = THERMAL[S.printMode], margin = 4;               // mm atas & bawah
+  const pw = t.paper * DOTS_PER_MM, iw = t.print * DOTS_PER_MM;
+  const k = iw / unit.width, ih = Math.round(unit.height * k);
+  const ph = ih + margin * 2 * DOTS_PER_MM;
+  const c = document.createElement("canvas"); c.width = pw; c.height = ph;
+  const g = c.getContext("2d", {willReadFrequently:true});
+  g.fillStyle = "#fff"; g.fillRect(0, 0, pw, ph);
+  g.imageSmoothingQuality = "high";
+  const x0 = Math.round((pw - iw) / 2), y0 = margin * DOTS_PER_MM;
+  g.drawImage(unit, x0, y0, iw, ih);
+  const img = g.getImageData(0, 0, pw, ph), d = img.data;
+  const lum = new Float32Array(pw * ph);
+  for (let i = 0, j = 0; j < lum.length; i += 4, j++) lum[j] = .299*d[i] + .587*d[i+1] + .114*d[i+2];
+
+  // Teks, garis, dan QR: hitam-putih tegas (tanpa pola titik) supaya tajam dan QR tetap terbaca.
+  const out = new Uint8Array(pw * ph);
+  for (let j = 0; j < lum.length; j++) out[j] = lum[j] < 150 ? 0 : 255;
+
+  // Area foto: pola titik Floyd–Steinberg, dihitung per kotak foto.
+  const bright = +S.thermalBright || 0;
+  for (const r of (L && L.rects) || []){
+    const rx0 = Math.max(0, Math.round(x0 + r.x * k)), ry0 = Math.max(0, Math.round(y0 + r.y * k));
+    const rx1 = Math.min(pw, Math.round(x0 + (r.x + r.w) * k)), ry1 = Math.min(ph, Math.round(y0 + (r.y + r.h) * k));
+    const w = rx1 - rx0, h = ry1 - ry0; if (w <= 0 || h <= 0) continue;
+    const buf = new Float32Array(w * h);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++){
+      let v = lum[(ry0 + y) * pw + rx0 + x];
+      v = Math.pow(v / 255, 0.8) * 255;                    // terangkan bayangan (kertas termal cenderung gelap)
+      buf[y*w + x] = (v - 128) * 1.15 + 128 + bright;      // sedikit kontras
+    }
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++){
+      const j = y*w + x, old = buf[j], nv = old < 128 ? 0 : 255, err = old - nv;
+      out[(ry0 + y) * pw + rx0 + x] = nv;
+      if (x + 1 < w) buf[j+1] += err * 7/16;
+      if (y + 1 < h){
+        if (x > 0) buf[j+w-1] += err * 3/16;
+        buf[j+w] += err * 5/16;
+        if (x + 1 < w) buf[j+w+1] += err * 1/16;
+      }
+    }
+  }
+  // QR digambar ulang tepat di kisi titik printer (modul minimal 3 titik) agar pasti terbaca.
+  if (lastQrText && L){
+    const box = L.builtin === "sheet" ? DEFAULT_QR : qrBox(L);
+    const q = qrcode(0, "M"); q.addData(lastQrText); q.make();
+    const n = q.getModuleCount(), quiet = 2;
+    const cell = Math.max(3, Math.floor(box.s * k / (n + quiet*2)));
+    const size = cell * (n + quiet*2);
+    const bx = Math.round(x0 + (box.x + box.s/2) * k - size/2);
+    const by = Math.round(y0 + (box.y + box.s) * k - size);
+    for (let y = Math.max(0, by); y < Math.min(ph, by + size); y++)
+      for (let x = Math.max(0, bx); x < Math.min(pw, bx + size); x++){
+        const mr = Math.floor((y - by) / cell) - quiet, mc = Math.floor((x - bx) / cell) - quiet;
+        out[y*pw + x] = (mr >= 0 && mc >= 0 && mr < n && mc < n && q.isDark(mr, mc)) ? 0 : 255;
+      }
+  }
+  for (let i = 0, j = 0; j < out.length; i += 4, j++){ d[i] = d[i+1] = d[i+2] = out[j]; d[i+3] = 255; }
+  g.putImageData(img, 0, 0);
+  c.paperMM = {w: t.paper, h: ph / DOTS_PER_MM};
+  return c;
 }
+
+function paperOf(L, sheet){
+  if (isThermal() && sheet && sheet.paperMM) return {w: sheet.paperMM.w / 25.4, h: sheet.paperMM.h / 25.4};
+  if (L.kind !== "strip") return {w:4, h:6};
+  return S.stripPaper === "2x6" ? {w:2, h:6} : {w:4, h:6};
+}
+/* Strip di kertas 4R:
+   "4x6"   = satu strip di tengah
+   "4x6x2" = dua strip kembar berdampingan, digunting di tengah */
 function composePrint(unit, L){
-  if (L.kind !== "strip" || S.stripPaper !== "4x6") return unit;
+  if (isThermal()) return thermalize(unit, L);
+  if (L.kind !== "strip" || S.stripPaper === "2x6") return unit;
   const c = document.createElement("canvas"); c.width = W; c.height = H;
   const g = c.getContext("2d");
   g.fillStyle = "#fff"; g.fillRect(0, 0, W, H);
-  g.drawImage(unit, (W - SW) / 2, 0);
-  g.strokeStyle = "rgba(0,0,0,.3)"; g.lineWidth = 2; g.beginPath();
-  for (const x of [(W - SW)/2, (W + SW)/2]){ g.moveTo(x, 0); g.lineTo(x, 24); g.moveTo(x, H - 24); g.lineTo(x, H); }
+  const twin = S.stripPaper === "4x6x2";
+  const xs = twin ? [0, SW] : [(W - SW) / 2];
+  xs.forEach(x => g.drawImage(unit, x, 0));
+  const cuts = twin ? [SW] : [(W - SW) / 2, (W + SW) / 2];
+  g.strokeStyle = "rgba(0,0,0,.35)"; g.lineWidth = 2; g.beginPath();
+  for (const x of cuts){ g.moveTo(x, 0); g.lineTo(x, 24); g.moveTo(x, H - 24); g.lineTo(x, H); }
   g.stroke();
   return c;
 }
@@ -631,7 +715,9 @@ function samplePhoto(rect, k){
 }
 function sampleSheet(L){
   const qr = S.scriptUrl ? S.scriptUrl + "?f=CONTOH12" : "https://contoh.qr/foto";
-  return composePrint(composeUnit(L.rects.map((r, i) => samplePhoto(r, i)), qr, L), L);
+  const keepQr = lastQrText; lastQrText = qr;
+  try { return composePrint(composeUnit(L.rects.map((r, i) => samplePhoto(r, i)), qr, L), L); }
+  finally { lastQrText = keepQr; }
 }
 function drawPreview(){
   const sh = sampleSheet(layout()), p = $("preview");
@@ -710,6 +796,12 @@ $("tplFile").onchange = async e => {
   }
   if (lastId) useTpl(lastId);
 };
+["sPrintMode","sThermalBright","sStripPaper"].forEach(id => $(id).addEventListener("change", () => {
+  const keep = {printMode:S.printMode, thermalBright:S.thermalBright, stripPaper:S.stripPaper};
+  S.printMode = $("sPrintMode").value; S.thermalBright = +$("sThermalBright").value || 0; S.stripPaper = $("sStripPaper").value;
+  $("thermalRow").hidden = !THERMAL[S.printMode];
+  drawPreview(); Object.assign(S, keep);
+}));
 $("tplQrPos").onchange = async () => { const t = layout().tpl; if (!t) return; t.qrPos = $("tplQrPos").value; try { await DB.put(t); } catch(e) {} drawPreview(); };
 $("tplQrSize").onchange = async () => { const t = layout().tpl; if (!t) return; t.qrSize = clamp(+$("tplQrSize").value || 0, 120, 400); try { await DB.put(t); } catch(e) {} drawPreview(); };
 
@@ -776,7 +868,7 @@ function buildPdf(dataUrl, paper, n){
     const doc = new jsPDF({orientation:"portrait", unit:"in", format:[paper.w, paper.h], compress:true});
     for (let i = 0; i < n; i++){
       if (i) doc.addPage([paper.w, paper.h], "portrait");
-      doc.addImage(dataUrl, "JPEG", 0, 0, paper.w, paper.h, "foto", "FAST");
+      doc.addImage(dataUrl, dataUrl.startsWith("data:image/png") ? "PNG" : "JPEG", 0, 0, paper.w, paper.h, "foto", "FAST");
     }
     doc.setProperties({title: S.title || "Foto Booth"});
     return new File([doc.output("blob")], "foto-booth.pdf", {type:"application/pdf"});
@@ -859,11 +951,12 @@ async function shoot(){
 
   const code = newCode();
   const qrText = S.scriptUrl ? S.scriptUrl + "?f=" + code : "";
+  lastQrText = qrText;
   try { await document.fonts.ready; } catch(e) {}
   const unit = composeUnit(photos, qrText, L);
   const sheet = composePrint(unit, L);
-  lastDataUrl = sheet.toDataURL("image/jpeg", .92);
-  const unitUrl = unit === sheet ? lastDataUrl : unit.toDataURL("image/jpeg", .92);
+  lastDataUrl = isThermal() ? sheet.toDataURL("image/png") : sheet.toDataURL("image/jpeg", .92);
+  const unitUrl = unit === sheet ? lastDataUrl : unit.toDataURL("image/jpeg", .92);   // unduhan digital tetap berwarna
   counter++; try { localStorage.setItem("pb-count", counter); } catch(e) {}
 
   showResult();
@@ -873,7 +966,7 @@ async function shoot(){
   } else {
     setUp("warn", "QR nonaktif: isi URL Apps Script di pengaturan.");
   }
-  lastPaper = paperOf(L);
+  lastPaper = paperOf(L, sheet);
   if (S.donate && S.scriptUrl) startDonation(code);
   else if (S.autoPrint) printPhoto(lastDataUrl, lastPaper);
   else { preparePrint(lastDataUrl, lastPaper); setPr("", "Cetak otomatis mati. Ketuk Cetak lagi."); }
@@ -1080,7 +1173,7 @@ document.addEventListener("keydown", e => {
 function fillForm(){
   $("sTitle").value = S.title; $("sSub").value = S.sub; $("sDate").value = S.date;
   $("sAccent").value = S.accent; $("sBg").value = S.bg; $("sUrl").value = S.scriptUrl;
-  $("sCount").value = S.countdown; $("sPoseDelay").value = S.poseDelay; $("sCopies").value = S.copies; $("sIdle").value = S.idle; $("sDonate").checked = S.donate; $("sAmounts").value = S.amounts; $("sStripPaper").value = S.stripPaper; $("sStripShots").value = S.stripShots; $("sHold").value = S.hold; $("sPrint").checked = S.autoPrint;
+  $("sCount").value = S.countdown; $("sPoseDelay").value = S.poseDelay; $("sCopies").value = S.copies; $("sIdle").value = S.idle; $("sDonate").checked = S.donate; $("sAmounts").value = S.amounts; $("sStripPaper").value = S.stripPaper; $("sPrintMode").value = S.printMode; $("sThermalBright").value = String(S.thermalBright); $("thermalRow").hidden = !THERMAL[S.printMode]; $("sStripShots").value = S.stripShots; $("sHold").value = S.hold; $("sPrint").checked = S.autoPrint;
   $("sMirror").checked = S.mirror; $("sSound").checked = S.sound; $("sPin").value = S.pin; $("sCam").value = S.camId;
   $("stats").textContent = "Foto diambil di perangkat ini: " + counter + (queue.length ? " · menunggu unggah: " + queue.length : "");
 }
@@ -1113,7 +1206,7 @@ $("settingsForm").onsubmit = e => {
     title:$("sTitle").value.trim(), sub:$("sSub").value.trim(), date:$("sDate").value.trim(),
     accent:$("sAccent").value.trim() || DEFAULTS.accent, bg:$("sBg").value.trim() || DEFAULTS.bg,
     scriptUrl:$("sUrl").value.trim().replace(/\?.*$/, ""), countdown:Math.max(0, Math.min(10, +$("sCount").value || 0)),
-    hold:Math.max(5, Math.min(120, +$("sHold").value || 15)), poseDelay:clamp(+$("sPoseDelay").value || 3, 1, 10), stripShots:clamp(+$("sStripShots").value || 3, 2, 4), copies:clamp(+$("sCopies").value || 1, 1, 5), idle:clamp(+$("sIdle").value || 0, 0, 600), donate:$("sDonate").checked, amounts:$("sAmounts").value, stripPaper:$("sStripPaper").value, autoPrint:$("sPrint").checked,
+    hold:Math.max(5, Math.min(120, +$("sHold").value || 15)), poseDelay:clamp(+$("sPoseDelay").value || 3, 1, 10), stripShots:clamp(+$("sStripShots").value || 3, 2, 4), copies:clamp(+$("sCopies").value || 1, 1, 5), idle:clamp(+$("sIdle").value || 0, 0, 600), donate:$("sDonate").checked, amounts:$("sAmounts").value, stripPaper:$("sStripPaper").value, printMode:$("sPrintMode").value, thermalBright:+$("sThermalBright").value || 0, autoPrint:$("sPrint").checked,
     mirror:$("sMirror").checked, sound:$("sSound").checked, pin:$("sPin").value, camId:$("sCam").value
   });
   saveSettings(); applySettings(); applyGuide(); $("panel").hidden = true; resetIdle();
