@@ -76,9 +76,10 @@ video{width:100%;height:100%;object-fit:cover;transform:scaleX(var(--mirror,-1))
 
 /* Layar hasil */
 .result{position:fixed;inset:0;background:var(--ink);z-index:10;display:flex;align-items:center;overflow:auto;justify-content:center;gap:clamp(20px,4vw,56px);
-  padding:calc(20px + env(safe-area-inset-top,0px)) max(16px,env(safe-area-inset-right,0px)) calc(20px + env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px));flex-wrap:wrap}
-.result>img{max-height:84vh;max-width:min(92vw,560px);object-fit:contain;border-radius:10px;box-shadow:0 20px 60px rgba(0,0,0,.5);background:#fff}
-.side{display:flex;flex-direction:column;gap:12px;max-width:420px;min-width:0;max-height:100%;overflow:auto}
+  padding:calc(20px + env(safe-area-inset-top,0px)) max(16px,env(safe-area-inset-right,0px)) calc(20px + env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px));flex-wrap:nowrap}
+.result>img{max-height:84vh;max-width:min(46vw,560px);flex:0 1 auto;min-width:0;object-fit:contain;border-radius:10px;box-shadow:0 20px 60px rgba(0,0,0,.5);background:#fff}
+.side{display:flex;flex-direction:column;gap:12px;flex:1 1 0;max-width:440px;min-width:0;max-height:100%;overflow:auto}
+@media (max-width:599px){.result{flex-wrap:wrap}.result>img{max-width:92vw}.side{flex-basis:100%}}
 .side h2{font-family:var(--display);font-weight:800;font-size:clamp(26px,3.6vw,42px);line-height:1.05;margin:0;text-wrap:balance}
 .side p{margin:0;color:var(--muted);font-size:17px;line-height:1.5}
 .status{display:flex;flex-direction:column;gap:8px;font-size:16px}
@@ -953,14 +954,43 @@ function buildPdf(dataUrl, paper, n){
   }catch(e){ return null; }
 }
 /* Dipanggil langsung di dalam handler sentuhan (wajib di iPad). */
+const fsEl = () => document.fullscreenElement || document.webkitFullscreenElement;
+function enterFs(){
+  const el = document.documentElement, f = el.requestFullscreen || el.webkitRequestFullscreen;
+  if (!f || fsEl()) return;
+  try { const p = f.call(el); if (p && p.catch) p.catch(() => {}); } catch(e) {}
+}
+function exitFs(){
+  return new Promise(res => {
+    if (!fsEl()) return res(false);
+    let done = false; const fin = () => { if (!done){ done = true; setTimeout(() => res(true), 60); } };
+    document.addEventListener("fullscreenchange", fin, {once:true});
+    document.addEventListener("webkitfullscreenchange", fin, {once:true});
+    const f = document.exitFullscreen || document.webkitExitFullscreen;
+    try { const p = f && f.call(document); if (p && p.then) p.then(fin, fin); else if (!f) fin(); } catch(e) { fin(); }
+    setTimeout(fin, 700);
+  });
+}
+function askTapAgain(){
+  $("printCta").hidden = false; $("printCta").textContent = "Ketuk sekali lagi untuk mencetak";
+  setPr("warn", "Layar penuh ditutup. Ketuk tombol kuning sekali lagi.");
+}
 function printNow(){
+  if (fsEl()){ exitFs().then(() => doPrint()); return; }
+  doPrint();
+}
+function doPrint(){
   const n = $("printArea").children.length || 1;
   const files = preparedFiles;
   if (IS_IOS && files && navigator.canShare && navigator.canShare({files})){
     setPr("warn", "Pilih “Cetak” di menu, lalu ketuk Cetak.");
     navigator.share({files})
       .then(() => setPr("ok", "Dikirim ke printer."))
-      .catch(e => { if (e && e.name === "AbortError") setPr("warn", "Cetak dibatalkan. Ketuk Cetak lagi bila perlu."); else window.print(); });
+      .catch(e => {
+        if (e && e.name === "AbortError") setPr("warn", "Cetak dibatalkan. Ketuk Cetak lagi bila perlu.");
+        else if (e && e.name === "NotAllowedError") askTapAgain();   // izin sentuhan habis saat keluar layar penuh
+        else window.print();
+      });
     return;
   }
   try { window.print(); setPr("ok", IS_IOS ? "Dialog cetak terbuka: ketuk Cetak." : n + " lembar dikirim ke printer."); }
@@ -1074,6 +1104,7 @@ async function shoot(){
 }
 
 function startHold(secs){
+  secs = Number.isFinite(+secs) && +secs > 0 ? +secs : 15;
   const bar = $("timerBar");
   bar.style.transition = "none"; bar.style.transform = "scaleX(1)"; void bar.offsetWidth;
   bar.style.transition = "transform " + secs + "s linear"; bar.style.transform = "scaleX(0)";
@@ -1082,6 +1113,10 @@ function startHold(secs){
 function showResult(){
   $("resultImg").src = lastDataUrl;
   $("result").hidden = false;
+  // iPad tidak menampilkan menu bagikan/dialog cetak di atas layar penuh, dan keluar dari layar penuh
+  // di tengah ketukan membuat iOS menolak membuka dialog. Jadi keluar sekarang, sebelum tombol cetak disentuh.
+  // Layar penuh aktif lagi pada ketukan berikutnya di layar kamera.
+  if (IS_IOS) exitFs();
   $("donate").hidden = true; $("payRow").hidden = true; $("cashBtn").hidden = true; $("cashPinRow").hidden = true; $("printCta").hidden = true;
   $("reprintBtn").hidden = false; $("doneBtn").textContent = "Selesai";
   $("resultTitle").textContent = "Alhamdulillah, jadi!";
@@ -1152,7 +1187,7 @@ $("showQris").onclick = async () => {
     if (!chk.ok) $("donErr").textContent = "Kode dari Xendit tidak dikenali sebagai QRIS. Lihat log eksekusi Apps Script, lalu kirimkan ke pengembang.";
     $("donPick").hidden = true; $("donQr").hidden = false;
     don.exp = Date.now() + (r.ttl || (r.exp - Date.now())); don.qrMade = true; setPay("warn", "Menunggu pembayaran…");
-    startHold(clamp(Math.round((r.exp - Date.now()) / 1000), 60, 1800));
+    startHold(clamp(Math.round((don.exp - Date.now()) / 1000) || 900, 60, 1800));
     startPoll();
   }catch(e){
     $("donErr").textContent = e.message.includes("Failed to fetch") ? "Tidak tersambung ke internet. Coba lagi, atau pakai Cetak tanpa QRIS." : e.message;
@@ -1177,7 +1212,8 @@ function drawQris(text){
   const c = $("qrisCanvas"), g = c.getContext("2d");
   // Ukuran tampil, lalu kotak QR dibulatkan ke piksel fisik utuh agar tepinya tajam.
   const dpr = window.devicePixelRatio || 1;
-  const cssSize = Math.min(380, innerHeight * .5, innerWidth * .6);
+  const sideW = (document.querySelector(".side")?.clientWidth || innerWidth * .45) - 40;
+  const cssSize = Math.max(200, Math.min(380, innerHeight * .45, sideW));
   const cell = Math.max(2, Math.floor(cssSize * dpr / total));
   c.width = c.height = cell * total;
   c.style.width = c.style.height = (c.width / dpr) + "px";
@@ -1324,7 +1360,13 @@ function applySettings(){
 /* Layar tetap menyala */
 async function keepAwake(){ try { await navigator.wakeLock?.request("screen"); } catch(e) {} }
 document.addEventListener("visibilitychange", () => { if (!document.hidden) keepAwake(); });
-document.addEventListener("click", () => { if (!document.fullscreenElement) document.documentElement.requestFullscreen?.().catch(()=>{}); }, {once:true});
+/* Layar penuh: masuk pada ketukan pertama; keluar sebentar saat dialog cetak/bagikan perlu tampil
+   (iPad tidak menampilkan dialog di atas layar penuh), lalu masuk lagi pada ketukan berikutnya di kamera. */
+let wantFs = false;
+document.addEventListener("pointerdown", () => {
+  if (!wantFs){ wantFs = true; enterFs(); return; }
+  if (!fsEl() && $("result").hidden && $("panel").hidden) enterFs();
+}, {capture:true, passive:true});
 
 /* ---------- Mode tidur ---------- */
 let idleTimer = null, sleeping = false;
