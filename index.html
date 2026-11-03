@@ -317,6 +317,12 @@ video{width:100%;height:100%;object-fit:cover;transform:scaleX(var(--mirror,-1))
         </div>
       </div>
       <p class="out-summary" id="outSummary"></p>
+      <div class="f"><label for="sIosFormat">Cara cetak di iPad</label>
+        <select id="sIosFormat"><option value="auto">Lewat menu bagikan → Cetak (kertas 4×6 otomatis, tanpa URL)</option><option value="dialog">Langsung dialog cetak (1 ketukan lebih cepat, kertas &amp; URL mengikuti Safari)</option><option value="image">Menu bagikan, selalu gambar foto</option><option value="pdf">Menu bagikan, selalu PDF</option></select>
+        <small>Menu bagikan: hasil 4×6 dikirim sebagai foto sehingga iOS memakai kertas 4×6, tanpa URL di cetakan. Langsung dialog: dialog cetak terbuka seketika, tetapi Safari memakai kertas pilihannya sendiri (sering A4) dan menambahkan URL di bawah cetakan.</small></div>
+      <label class="check"><input type="checkbox" id="sStation"> Cetak lewat stasiun cetak (langsung cetak, tanpa dialog)</label>
+      <div class="f" id="rowStationKey"><label for="sStationKey">Kode stasiun cetak</label><input type="text" id="sStationKey" autocomplete="off">
+        <small>Sama dengan KODE_STASIUN di Code.gs dan di halaman stasiun cetak. Butuh laptop/PC di samping printer yang membuka stasiun-cetak.html.</small></div>
       <label class="check"><input type="checkbox" id="sPrint"> Cetak otomatis setelah foto diambil</label>
       <label class="check"><input type="checkbox" id="sMirror"> Hasil dicerminkan seperti di layar</label>
       <label class="check"><input type="checkbox" id="sSound"> Bunyi hitung mundur</label>
@@ -339,7 +345,7 @@ const $ = id => document.getElementById(id);
 /* ---------- Pengaturan (tersimpan di perangkat ini) ---------- */
 const DEFAULTS = {
   title:"Milad Fakultas", sub:"Foto kenangan bersama", date:"", accent:"#1E2A78", bg:"#FFFFFF",
-  scriptUrl:"", camId:"", countdown:3, hold:15, autoPrint:true, mirror:true, sound:true, pin:"", frame:"", activeTpl:"", stripShots:3, poseDelay:3, copies:2, stripPaper:"2x6", printMode:"color", thermalBright:0, donate:false, amounts:"5000, 10000, 20000", idle:30
+  scriptUrl:"", camId:"", countdown:3, hold:15, autoPrint:true, mirror:true, sound:true, pin:"", frame:"", activeTpl:"", stripShots:3, poseDelay:3, copies:2, stripPaper:"2x6", printMode:"color", thermalBright:0, iosFormat:"auto", station:false, stationKey:"", donate:false, amounts:"5000, 10000, 20000", idle:30
 };
 let S = {...DEFAULTS};
 try { Object.assign(S, JSON.parse(localStorage.getItem("pb-settings") || "{}")); } catch(e) {}
@@ -818,7 +824,7 @@ $("tplFile").onchange = async e => {
 };
 /* Pengaturan menyesuaikan tata letak dan jenis printer yang dipilih. */
 function formPrintState(){
-  return {printMode:$("sPrintMode").value, thermalBright:+$("sThermalBright").value || 0,
+  return {printMode:$("sPrintMode").value, iosFormat:$("sIosFormat").value, station:$("sStation").checked, stationKey:$("sStationKey").value.trim(), thermalBright:+$("sThermalBright").value || 0,
           stripPaper:$("sStripPaper").value, copies:clamp(+$("sCopies").value || 1, 1, 5)};
 }
 function withForm(fn){
@@ -849,6 +855,7 @@ function updateAdaptive(){
     $("outSummary").innerHTML = "<b>Hasil setiap sesi:</b> " + pose + " → " + out + ".";
   });
 }
+$("sStation").addEventListener("change", () => { $("rowStationKey").hidden = !$("sStation").checked; });
 ["sPrintMode","sThermalBright","sStripPaper","sCopies"].forEach(id => $(id).addEventListener(id === "sCopies" ? "input" : "change", () => {
   updateAdaptive(); withForm(drawPreview);
   if (id !== "sCopies" && id !== "sThermalBright") renderTplList();
@@ -893,25 +900,45 @@ function setUp(state, text){ $("upDot").className = "dot " + state; $("upText").
 function setPr(state, text){ $("prDot").className = "dot " + state; $("prText").textContent = text; }
 
 /* ---------- Cetak ---------- */
-let lastPaper = {w:4, h:6}, preparedFor = "", preparedPdf = null;
+let lastPaper = {w:4, h:6}, preparedFor = "", preparedFiles = null;
 /* Siapkan cetakan lebih dulu, supaya cetak bisa dipanggil langsung dari sentuhan.
-   - Android/PC: halaman web dengan @page seukuran kertas (Chrome mematuhinya, tanpa header/footer).
-   - iPad/iPhone: berkas PDF seukuran kertas. Safari iPad tidak mematuhi @page dan selalu
-     menambahkan URL di bawah cetakan halaman web; PDF tidak terkena keduanya, dan iOS
-     memilih kertas yang paling cocok dengan ukuran halaman PDF. */
+   - Android/PC: halaman web dengan @page seukuran kertas.
+   - iPad/iPhone, kertas 4×6: dikirim sebagai GAMBAR FOTO (JPEG). iOS memperlakukannya
+     sebagai cetak foto dan memakai kertas foto 4×6, bukan A4.
+   - iPad/iPhone, kertas lain (2×6, termal): dikirim sebagai PDF seukuran kertas.
+   Keduanya bebas dari URL yang selalu ditambahkan Safari pada cetakan halaman web. */
+function iosFormat(paper){
+  const f = S.iosFormat || "auto";
+  if (f !== "auto") return f;
+  return (!isThermal() && paper.w === 4 && paper.h === 6) ? "image" : "pdf";
+}
 function preparePrint(dataUrl, paper = lastPaper){
   lastPaper = paper;
   const n = clamp(+S.copies || 1, 1, 5);
   $("pageStyle").textContent = "@page{size:" + paper.w + "in " + paper.h + "in;margin:0}";
   const area = $("printArea");
   area.style.setProperty("--pw", paper.w + "in"); area.style.setProperty("--ph", paper.h + "in");
-  const key = dataUrl + n + paper.w + "x" + paper.h;
+  const key = dataUrl + n + paper.w + "x" + paper.h + (S.iosFormat || "auto");
   if (preparedFor === key) return Promise.resolve();
-  area.innerHTML = ""; preparedFor = key; preparedPdf = null;
-  if (IS_IOS) preparedPdf = buildPdf(dataUrl, paper, n);
+  area.innerHTML = ""; preparedFor = key; preparedFiles = null;
+  if (IS_IOS && iosFormat(paper) !== "dialog"){
+    if (iosFormat(paper) === "image"){
+      const blob = dataUrlToBlob(dataUrl), ext = blob.type === "image/png" ? "png" : "jpg";
+      preparedFiles = Array.from({length:n}, (_, i) => new File([blob], "foto-booth-" + (i+1) + "." + ext, {type:blob.type}));
+    } else {
+      const pdf = buildPdf(dataUrl, paper, n);
+      preparedFiles = pdf ? [pdf] : null;
+    }
+  }
   return Promise.all(Array.from({length:n}, () => new Promise(res => {
     const img = new Image(); img.alt = ""; img.onload = img.onerror = res; img.src = dataUrl; area.append(img);
   })));
+}
+function dataUrlToBlob(dataUrl){
+  const [head, b64] = dataUrl.split(","), type = head.match(/data:([^;]+)/)[1];
+  const bin = atob(b64), u = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+  return new Blob([u], {type});
 }
 function buildPdf(dataUrl, paper, n){
   try{
@@ -928,10 +955,10 @@ function buildPdf(dataUrl, paper, n){
 /* Dipanggil langsung di dalam handler sentuhan (wajib di iPad). */
 function printNow(){
   const n = $("printArea").children.length || 1;
-  const pdf = preparedPdf;
-  if (IS_IOS && pdf && navigator.canShare && navigator.canShare({files:[pdf]})){
+  const files = preparedFiles;
+  if (IS_IOS && files && navigator.canShare && navigator.canShare({files})){
     setPr("warn", "Pilih “Cetak” di menu, lalu ketuk Cetak.");
-    navigator.share({files:[pdf]})
+    navigator.share({files})
       .then(() => setPr("ok", "Dikirim ke printer."))
       .catch(e => { if (e && e.name === "AbortError") setPr("warn", "Cetak dibatalkan. Ketuk Cetak lagi bila perlu."); else window.print(); });
     return;
@@ -939,8 +966,30 @@ function printNow(){
   try { window.print(); setPr("ok", IS_IOS ? "Dialog cetak terbuka: ketuk Cetak." : n + " lembar dikirim ke printer."); }
   catch(e){ setPr("bad", "Dialog cetak tidak terbuka. Ketuk tombol cetak lagi."); }
 }
+/* Stasiun cetak: kirim lembar cetak ke antrean; laptop di samping printer mencetaknya tanpa dialog. */
+const useStation = () => !!(S.station && S.stationKey && S.scriptUrl);
+async function sendToStation(dataUrl, paper = lastPaper){
+  lastPaper = paper;
+  $("printCta").hidden = true;
+  const code = (don && don.code) || current || newCode();
+  setPr("warn", "Mengirim ke stasiun cetak…");
+  for (let attempt = 1; attempt <= 3; attempt++){
+    try{
+      await api({action:"job", key:S.stationKey, code, image:dataUrl.split(",")[1],
+                 mime:dataUrl.slice(5, dataUrl.indexOf(";")), w:paper.w, h:paper.h, copies:clamp(+S.copies || 1, 1, 5)}, 30000);
+      setPr("ok", "Dikirim ke printer. Tunggu sebentar, cetakan keluar.");
+      return true;
+    }catch(e){
+      setPr("bad", "Gagal kirim ke stasiun cetak (" + e.message + ")" + (attempt < 3 ? ", mencoba lagi…" : ". Ketuk Cetak lagi."));
+      if (/Kode stasiun|belum diaktifkan/.test(e.message)) return false;
+      await sleep(2000 * attempt);
+    }
+  }
+  return false;
+}
 /* Cetak otomatis (Android/PC). Di iPad: tombol cetak besar (iOS mewajibkan sentuhan). */
 async function printPhoto(dataUrl, paper = lastPaper){
+  if (useStation()) return sendToStation(dataUrl, paper);
   await preparePrint(dataUrl, paper);
   if (IS_IOS){ showPrintCta(); return; }
   setPr("warn", "Membuka dialog cetak…");
@@ -1044,7 +1093,7 @@ function closeResult(){
   $("result").hidden = true; $("bottom").hidden = false; resetIdle();
 }
 $("doneBtn").onclick = closeResult;
-$("reprintBtn").onclick = () => { if (lastDataUrl){ printNow(); } startHold(Math.max(60, +S.hold || 15)); };
+$("reprintBtn").onclick = () => { if (lastDataUrl){ if (useStation()) sendToStation(lastDataUrl, lastPaper); else printNow(); } startHold(Math.max(60, +S.hold || 15)); };
 $("printCta").onclick = () => { $("printCta").hidden = true; $("resultNote").textContent = "Foto sedang dicetak. Scan QR di kertas untuk mengunduh versi digitalnya."; printNow(); startHold(+S.hold || 15); };
 
 /* ---------- Donasi QRIS sebelum cetak ---------- */
@@ -1224,7 +1273,7 @@ document.addEventListener("keydown", e => {
 function fillForm(){
   $("sTitle").value = S.title; $("sSub").value = S.sub; $("sDate").value = S.date;
   $("sAccent").value = S.accent; $("sBg").value = S.bg; $("sUrl").value = S.scriptUrl;
-  $("sCount").value = S.countdown; $("sPoseDelay").value = S.poseDelay; $("sCopies").value = S.copies; $("sIdle").value = S.idle; $("sDonate").checked = S.donate; $("sAmounts").value = S.amounts; $("sStripPaper").value = S.stripPaper; $("sPrintMode").value = S.printMode; $("sThermalBright").value = String(S.thermalBright); $("thermalRow").hidden = !THERMAL[S.printMode]; $("sHold").value = S.hold; $("sPrint").checked = S.autoPrint;
+  $("sCount").value = S.countdown; $("sPoseDelay").value = S.poseDelay; $("sCopies").value = S.copies; $("sIdle").value = S.idle; $("sDonate").checked = S.donate; $("sAmounts").value = S.amounts; $("sStripPaper").value = S.stripPaper; $("sPrintMode").value = S.printMode; $("sIosFormat").value = S.iosFormat || "auto"; $("sStation").checked = !!S.station; $("sStationKey").value = S.stationKey || ""; $("rowStationKey").hidden = !S.station; $("sThermalBright").value = String(S.thermalBright); $("thermalRow").hidden = !THERMAL[S.printMode]; $("sHold").value = S.hold; $("sPrint").checked = S.autoPrint;
   $("sMirror").checked = S.mirror; $("sSound").checked = S.sound; $("sPin").value = S.pin; $("sCam").value = S.camId;
   $("stats").textContent = "Foto diambil di perangkat ini: " + counter + (queue.length ? " · menunggu unggah: " + queue.length : "");
 }
@@ -1257,7 +1306,7 @@ $("settingsForm").onsubmit = e => {
     title:$("sTitle").value.trim(), sub:$("sSub").value.trim(), date:$("sDate").value.trim(),
     accent:$("sAccent").value.trim() || DEFAULTS.accent, bg:$("sBg").value.trim() || DEFAULTS.bg,
     scriptUrl:$("sUrl").value.trim().replace(/\?.*$/, ""), countdown:Math.max(0, Math.min(10, +$("sCount").value || 0)),
-    hold:Math.max(5, Math.min(120, +$("sHold").value || 15)), poseDelay:clamp(+$("sPoseDelay").value || 3, 1, 10), copies:clamp(+$("sCopies").value || 1, 1, 5), idle:clamp(+$("sIdle").value || 0, 0, 600), donate:$("sDonate").checked, amounts:$("sAmounts").value, stripPaper:$("sStripPaper").value, printMode:$("sPrintMode").value, thermalBright:+$("sThermalBright").value || 0, autoPrint:$("sPrint").checked,
+    hold:Math.max(5, Math.min(120, +$("sHold").value || 15)), poseDelay:clamp(+$("sPoseDelay").value || 3, 1, 10), copies:clamp(+$("sCopies").value || 1, 1, 5), idle:clamp(+$("sIdle").value || 0, 0, 600), donate:$("sDonate").checked, amounts:$("sAmounts").value, stripPaper:$("sStripPaper").value, printMode:$("sPrintMode").value, iosFormat:$("sIosFormat").value, station:$("sStation").checked, stationKey:$("sStationKey").value.trim(), thermalBright:+$("sThermalBright").value || 0, autoPrint:$("sPrint").checked,
     mirror:$("sMirror").checked, sound:$("sSound").checked, pin:$("sPin").value, camId:$("sCam").value
   });
   saveSettings(); applySettings(); applyGuide(); $("panel").hidden = true; resetIdle();
