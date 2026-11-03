@@ -127,10 +127,11 @@ video{width:100%;height:100%;object-fit:cover;transform:scaleX(var(--mirror,-1))
 .check input{width:22px;height:22px;accent-color:var(--gold)}
 .two{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .note{font-size:14px;color:var(--muted)}
+.out-summary{margin:0;padding:12px 14px;border-radius:10px;background:rgba(232,176,74,.1);border:1px solid rgba(232,176,74,.35);font-size:14px;line-height:1.5}
 .tpls{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:12px}
 .tpl{display:flex;flex-direction:column;gap:8px;padding:8px;border:2px solid var(--line);border-radius:12px;background:#14112b;min-width:0}
 .tpl.on{border-color:var(--gold)}
-.tpl .thumb{aspect-ratio:2/3;border-radius:6px;background:repeating-conic-gradient(#2b2752 0 25%,#221e47 0 50%) 0 0/16px 16px;overflow:hidden;display:grid;place-items:center;cursor:pointer}
+.tpl .thumb{aspect-ratio:2/3;border-radius:6px;background:#2b2752;overflow:hidden;display:grid;place-items:center;cursor:pointer}
 .tpl .thumb img{width:100%;height:100%;object-fit:contain}
 .tpl .thumb span{font-size:13px;color:var(--muted);text-align:center;padding:6px}
 .tpl input{font:600 14px var(--body);background:transparent;border:0;border-bottom:1px solid var(--line);color:var(--paper);padding:4px 0;width:100%}
@@ -264,7 +265,7 @@ video{width:100%;height:100%;object-fit:cover;transform:scaleX(var(--mirror,-1))
         <div class="f"><label for="sAccent">Warna aksen</label><input type="text" id="sAccent" placeholder="#1E2A78"></div>
         <div class="f"><label for="sBg">Warna kertas</label><input type="text" id="sBg" placeholder="#FFFFFF"></div>
       </div>
-      <h3>Template bingkai</h3>
+      <h3>Tata letak &amp; template</h3>
       <div class="tpls" id="tplList"></div>
       <div class="f">
         <label for="tplFile">Unggah template baru (PNG)</label>
@@ -302,10 +303,8 @@ video{width:100%;height:100%;object-fit:cover;transform:scaleX(var(--mirror,-1))
       </div>
       <div class="f"><label for="sIdle">Mode tidur setelah diam (detik)</label><input type="number" id="sIdle" min="0" max="600">
         <small>Kamera dimatikan dan layar menampilkan contoh hasil cetak. Ketuk sekali untuk bangun. Isi 0 untuk mematikan mode tidur.</small></div>
-      <div class="two">
-        <div class="f"><label for="sPoseDelay">Jeda antar pose (detik)</label><input type="number" id="sPoseDelay" min="1" max="10"></div>
-        <div class="f"><label for="sStripShots">Jumlah foto di strip bawaan</label><input type="number" id="sStripShots" min="2" max="4"></div>
-      </div>
+      <div class="f" id="rowPoseDelay"><label for="sPoseDelay">Jeda antar pose (detik)</label><input type="number" id="sPoseDelay" min="1" max="10">
+        <small>Waktu bersiap sebelum pose kedua dan seterusnya.</small></div>
       <div class="two">
         <div class="f"><label for="sCopies">Jumlah cetak per sesi</label><input type="number" id="sCopies" min="1" max="5"></div>
         <div class="f"><label for="sPrintMode">Jenis printer</label>
@@ -313,10 +312,11 @@ video{width:100%;height:100%;object-fit:cover;transform:scaleX(var(--mirror,-1))
           <small>Termal: hasil diubah ke hitam-putih berpola titik, selebar gulungan kertas. Unduhan digital lewat QR tetap berwarna.</small></div>
         <div class="f" id="thermalRow"><label for="sThermalBright">Kecerahan termal</label>
           <select id="sThermalBright"><option value="-20">Lebih gelap</option><option value="0">Normal</option><option value="20">Lebih terang</option><option value="40">Paling terang</option></select></div>
-        <div class="f"><label for="sStripPaper">Kertas untuk strip (printer berwarna)</label>
+        <div class="f" id="rowStripPaper"><label for="sStripPaper">Kertas untuk strip</label>
           <select id="sStripPaper"><option value="2x6">2×6 inci (1 strip)</option><option value="4x6">4R (4×6 inci), 1 strip di tengah</option><option value="4x6x2">4R (4×6 inci), 2 strip berdampingan</option></select>
-          <small>2 strip berdampingan: setiap lembar berisi 2 strip kembar, digunting di tengah. Jumlah cetak 2 berarti 4 strip.</small></div>
+        </div>
       </div>
+      <p class="out-summary" id="outSummary"></p>
       <label class="check"><input type="checkbox" id="sPrint"> Cetak otomatis setelah foto diambil</label>
       <label class="check"><input type="checkbox" id="sMirror"> Hasil dicerminkan seperti di layar</label>
       <label class="check"><input type="checkbox" id="sSound"> Bunyi hitung mundur</label>
@@ -408,17 +408,32 @@ const DB = {
 let tpls = [];      // {id, name, dataUrl, kind, w, h, rects[], qrPos, qrSize, created}
 const tplImg = {};  // id -> Image
 
-function builtinStrip(){
-  const n = clamp(+S.stripShots || 3, 2, 4), top = 250, bottom = 1430, gap = 24;
+function builtinStrip(n = 3){
+  n = clamp(+n || 3, 2, 4);
+  const top = 250, bottom = 1430, gap = 24;
   const h = Math.floor((bottom - top - gap*(n-1)) / n);
   const rects = Array.from({length:n}, (_, i) => ({x:40, y:top + i*(h + gap), w:520, h}));
-  return {id:"strip", kind:"strip", w:SW, h:H, rects, img:null, builtin:"strip", qrPos:"br", qrSize:170};
+  return {id:"strip" + n, kind:"strip", w:SW, h:H, rects, img:null, builtin:"strip", qrPos:"br", qrSize:170};
 }
 function builtinSheet(){
   return {id:"", kind:"sheet", w:W, h:H, rects:[DEFAULT_PHOTO], img:null, builtin:"sheet"};
 }
+/* 4R berisi 2 foto mendatar, atas dan bawah; teks dan QR di bawah seperti lembar 1 foto. */
+function builtinDuo(){
+  const top = 60, bottom = 1350, gap = 24, h = Math.floor((bottom - top - gap) / 2);
+  return {id:"duo", kind:"sheet", w:W, h:H, rects:[{x:60, y:top, w:1080, h}, {x:60, y:top + h + gap, w:1080, h}], img:null, builtin:"sheet"};
+}
+const BUILTINS = [
+  {id:"",       name:"4R · 1 foto",            meta:"Lembar 4R",            make:() => builtinSheet()},
+  {id:"duo",    name:"4R · 2 foto atas-bawah", meta:"Lembar 4R · 2 pose",   make:() => builtinDuo()},
+  {id:"strip2", name:"Strip · 2 foto",         meta:"Strip 2×6 · 2 pose",   make:() => builtinStrip(2)},
+  {id:"strip3", name:"Strip · 3 foto",         meta:"Strip 2×6 · 3 pose",   make:() => builtinStrip(3)},
+  {id:"strip4", name:"Strip · 4 foto",         meta:"Strip 2×6 · 4 pose",   make:() => builtinStrip(4)},
+];
 function layoutOf(id){
-  if (id === "strip") return builtinStrip();
+  if (id === "strip") return builtinStrip(S.stripShots || 3);      // pengaturan versi lama
+  const bi = BUILTINS.find(x => x.id === id && id !== "");
+  if (bi) return bi.make();
   const t = tpls.find(x => x.id === id);
   if (!t) return builtinSheet();
   const strip = t.kind === "strip";
@@ -444,7 +459,7 @@ async function loadTemplates(){
       try { tplImg[t.id] = await loadImage(t.dataUrl); } catch(e) {}
     }
   }catch(e){ tpls = []; }
-  if (S.activeTpl && S.activeTpl !== "strip" && !tpls.some(t => t.id === S.activeTpl)) S.activeTpl = "";
+  if (S.activeTpl && S.activeTpl !== "strip" && !BUILTINS.some(b => b.id === S.activeTpl) && !tpls.some(t => t.id === S.activeTpl)) S.activeTpl = "";
   applyGuide();
 }
 
@@ -567,10 +582,11 @@ function composeUnit(photos, qrText, L){
     return c;
   }
 
-  // Lembar bawaan (satu foto)
-  const rect = L.rects[0];
-  g.save(); roundRect(g, rect.x, rect.y, rect.w, rect.h, 26); g.clip();
-  if (photos[0]) g.drawImage(photos[0], rect.x, rect.y, rect.w, rect.h); g.restore();
+  // Lembar bawaan 4R (1 atau 2 foto)
+  L.rects.forEach((rect, i) => {
+    g.save(); roundRect(g, rect.x, rect.y, rect.w, rect.h, 26); g.clip();
+    if (photos[i]) g.drawImage(photos[i], rect.x, rect.y, rect.w, rect.h); g.restore();
+  });
   const textMax = qrText ? 740 : W - 120;
   g.fillStyle = accent; g.textBaseline = "alphabetic";
   g.font = '800 70px "Bricolage Grotesque", sans-serif';
@@ -642,7 +658,7 @@ function thermalize(unit, L){
   }
   // QR digambar ulang tepat di kisi titik printer (modul minimal 3 titik) agar pasti terbaca.
   if (lastQrText && L){
-    const box = L.builtin === "sheet" ? DEFAULT_QR : qrBox(L);
+    const box = qrBox(L);
     const q = qrcode(0, "M"); q.addData(lastQrText); q.make();
     const n = q.getModuleCount(), quiet = 2;
     const cell = Math.max(3, Math.floor(box.s * k / (n + quiet*2)));
@@ -727,7 +743,7 @@ function drawPreview(){
 /* Daftar template di panel */
 function renderTplList(){
   const box = $("tplList"); box.innerHTML = "";
-  const cur = S.activeTpl || "";
+  const cur = S.activeTpl === "strip" ? "strip" + clamp(+S.stripShots || 3, 2, 4) : (S.activeTpl || "");
   const card = (id, name, src, removable, meta) => {
     const el = document.createElement("div"); el.className = "tpl" + (cur === id ? " on" : "");
     const th = document.createElement("div"); th.className = "thumb";
@@ -758,17 +774,21 @@ function renderTplList(){
     }
     el.append(acts); box.append(el);
   };
-  const thumb = L => { const s = sampleSheet(L), t = document.createElement("canvas"); t.width = 240; t.height = 360; t.getContext("2d").drawImage(s, 0, 0, 240, 360); return t.toDataURL("image/jpeg", .8); };
-  card("", "Bawaan: 1 foto", thumb(builtinSheet()), false, "Lembar 4R");
-  card("strip", "Bawaan: strip", thumb(builtinStrip()), false, builtinStrip().rects.length + " foto · strip 2×6");
+  const thumb = L => {
+    const sh = withForm(() => sampleSheet(L)), t = document.createElement("canvas"); t.width = 240; t.height = 360;
+    const g = t.getContext("2d"), k = Math.min(240 / sh.width, 360 / sh.height), w = sh.width * k, h = sh.height * k;
+    g.drawImage(sh, (240 - w) / 2, (360 - h) / 2, w, h);
+    return t.toDataURL("image/png");
+  };
+  BUILTINS.forEach(b => card(b.id, b.name, thumb(b.make()), false, b.meta));
   tpls.forEach(t => card(t.id, t.name, t.dataUrl, true,
-    (t.rects?.length || 1) + " foto · " + (t.kind === "strip" ? "strip 2×6" : "Lembar 4R")));
+    (t.kind === "strip" ? "Strip 2×6" : "Lembar 4R") + " · " + (t.rects?.length || 1) + " pose"));
   const L = layout();
   $("tplQrRow").hidden = !L.tpl;
   if (L.tpl){ $("tplQrPos").value = L.qrPos; $("tplQrSize").value = L.qrSize; }
-  drawPreview();
+  withForm(drawPreview);
 }
-function useTpl(id){ S.activeTpl = id; saveSettings(); applyGuide(); renderTplList(); }
+function useTpl(id){ S.activeTpl = id; saveSettings(); applyGuide(); renderTplList(); updateAdaptive(); }
 async function removeTpl(id){
   try { await DB.del(id); } catch(e) {}
   tpls = tpls.filter(t => t.id !== id); delete tplImg[id];
@@ -796,11 +816,42 @@ $("tplFile").onchange = async e => {
   }
   if (lastId) useTpl(lastId);
 };
-["sPrintMode","sThermalBright","sStripPaper"].forEach(id => $(id).addEventListener("change", () => {
-  const keep = {printMode:S.printMode, thermalBright:S.thermalBright, stripPaper:S.stripPaper};
-  S.printMode = $("sPrintMode").value; S.thermalBright = +$("sThermalBright").value || 0; S.stripPaper = $("sStripPaper").value;
-  $("thermalRow").hidden = !THERMAL[S.printMode];
-  drawPreview(); Object.assign(S, keep);
+/* Pengaturan menyesuaikan tata letak dan jenis printer yang dipilih. */
+function formPrintState(){
+  return {printMode:$("sPrintMode").value, thermalBright:+$("sThermalBright").value || 0,
+          stripPaper:$("sStripPaper").value, copies:clamp(+$("sCopies").value || 1, 1, 5)};
+}
+function withForm(fn){
+  const keep = {printMode:S.printMode, thermalBright:S.thermalBright, stripPaper:S.stripPaper, copies:S.copies};
+  Object.assign(S, formPrintState());
+  try { return fn(); } finally { Object.assign(S, keep); }
+}
+function updateAdaptive(){
+  withForm(() => {
+    const L = layout(), n = L.rects.length, thermal = isThermal(), strip = L.kind === "strip";
+    $("thermalRow").hidden = !thermal;
+    $("rowStripPaper").hidden = thermal || !strip;
+    $("rowPoseDelay").hidden = n < 2;
+    const c = S.copies, pose = n + " pose";
+    let out;
+    if (thermal){
+      const t = THERMAL[S.printMode], len = Math.round(t.print * L.h / L.w + 8);
+      out = c + " lembar termal " + t.paper + " mm, panjang ±" + len + " mm, hitam-putih";
+    } else if (!strip){
+      out = c + " lembar 4R (4×6 inci)";
+    } else if (S.stripPaper === "2x6"){
+      out = c + " lembar strip 2×6 inci";
+    } else if (S.stripPaper === "4x6x2"){
+      out = c + " lembar 4R, masing-masing berisi 2 strip kembar (total " + (c*2) + " strip, digunting)";
+    } else {
+      out = c + " lembar 4R, strip di tengah";
+    }
+    $("outSummary").innerHTML = "<b>Hasil setiap sesi:</b> " + pose + " → " + out + ".";
+  });
+}
+["sPrintMode","sThermalBright","sStripPaper","sCopies"].forEach(id => $(id).addEventListener(id === "sCopies" ? "input" : "change", () => {
+  updateAdaptive(); withForm(drawPreview);
+  if (id !== "sCopies" && id !== "sThermalBright") renderTplList();
 }));
 $("tplQrPos").onchange = async () => { const t = layout().tpl; if (!t) return; t.qrPos = $("tplQrPos").value; try { await DB.put(t); } catch(e) {} drawPreview(); };
 $("tplQrSize").onchange = async () => { const t = layout().tpl; if (!t) return; t.qrSize = clamp(+$("tplQrSize").value || 0, 120, 400); try { await DB.put(t); } catch(e) {} drawPreview(); };
@@ -1173,7 +1224,7 @@ document.addEventListener("keydown", e => {
 function fillForm(){
   $("sTitle").value = S.title; $("sSub").value = S.sub; $("sDate").value = S.date;
   $("sAccent").value = S.accent; $("sBg").value = S.bg; $("sUrl").value = S.scriptUrl;
-  $("sCount").value = S.countdown; $("sPoseDelay").value = S.poseDelay; $("sCopies").value = S.copies; $("sIdle").value = S.idle; $("sDonate").checked = S.donate; $("sAmounts").value = S.amounts; $("sStripPaper").value = S.stripPaper; $("sPrintMode").value = S.printMode; $("sThermalBright").value = String(S.thermalBright); $("thermalRow").hidden = !THERMAL[S.printMode]; $("sStripShots").value = S.stripShots; $("sHold").value = S.hold; $("sPrint").checked = S.autoPrint;
+  $("sCount").value = S.countdown; $("sPoseDelay").value = S.poseDelay; $("sCopies").value = S.copies; $("sIdle").value = S.idle; $("sDonate").checked = S.donate; $("sAmounts").value = S.amounts; $("sStripPaper").value = S.stripPaper; $("sPrintMode").value = S.printMode; $("sThermalBright").value = String(S.thermalBright); $("thermalRow").hidden = !THERMAL[S.printMode]; $("sHold").value = S.hold; $("sPrint").checked = S.autoPrint;
   $("sMirror").checked = S.mirror; $("sSound").checked = S.sound; $("sPin").value = S.pin; $("sCam").value = S.camId;
   $("stats").textContent = "Foto diambil di perangkat ini: " + counter + (queue.length ? " · menunggu unggah: " + queue.length : "");
 }
@@ -1182,7 +1233,7 @@ function openPanel(){
   const locked = !!S.pin;
   $("pinGate").hidden = !locked; $("settingsBody").hidden = locked;
   $("pinTry").value = ""; $("pinErr").textContent = "";
-  fillForm(); renderTplList();
+  fillForm(); renderTplList(); updateAdaptive(); withForm(drawPreview);
 }
 $("gear").addEventListener("click", e => { e.stopPropagation(); openPanel(); });
 $("closePanel").onclick = () => { $("panel").hidden = true; resetIdle(); };
@@ -1206,7 +1257,7 @@ $("settingsForm").onsubmit = e => {
     title:$("sTitle").value.trim(), sub:$("sSub").value.trim(), date:$("sDate").value.trim(),
     accent:$("sAccent").value.trim() || DEFAULTS.accent, bg:$("sBg").value.trim() || DEFAULTS.bg,
     scriptUrl:$("sUrl").value.trim().replace(/\?.*$/, ""), countdown:Math.max(0, Math.min(10, +$("sCount").value || 0)),
-    hold:Math.max(5, Math.min(120, +$("sHold").value || 15)), poseDelay:clamp(+$("sPoseDelay").value || 3, 1, 10), stripShots:clamp(+$("sStripShots").value || 3, 2, 4), copies:clamp(+$("sCopies").value || 1, 1, 5), idle:clamp(+$("sIdle").value || 0, 0, 600), donate:$("sDonate").checked, amounts:$("sAmounts").value, stripPaper:$("sStripPaper").value, printMode:$("sPrintMode").value, thermalBright:+$("sThermalBright").value || 0, autoPrint:$("sPrint").checked,
+    hold:Math.max(5, Math.min(120, +$("sHold").value || 15)), poseDelay:clamp(+$("sPoseDelay").value || 3, 1, 10), copies:clamp(+$("sCopies").value || 1, 1, 5), idle:clamp(+$("sIdle").value || 0, 0, 600), donate:$("sDonate").checked, amounts:$("sAmounts").value, stripPaper:$("sStripPaper").value, printMode:$("sPrintMode").value, thermalBright:+$("sThermalBright").value || 0, autoPrint:$("sPrint").checked,
     mirror:$("sMirror").checked, sound:$("sSound").checked, pin:$("sPin").value, camId:$("sCam").value
   });
   saveSettings(); applySettings(); applyGuide(); $("panel").hidden = true; resetIdle();
