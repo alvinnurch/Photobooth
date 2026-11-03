@@ -10,6 +10,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Figtree:wght@400;500;700&display=swap">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <style>
 /* Kiosk satu layar: kamera penuh, tombol besar di bawah, panel pengaturan tersembunyi */
 :root{
@@ -213,6 +214,7 @@ video{width:100%;height:100%;object-fit:cover;transform:scaleX(var(--mirror,-1))
         <p class="don-lead">Scan dengan m-banking atau e-wallet apa pun yang mendukung QRIS. Terangkan layar tablet bila sulit terbaca.</p>
         <p class="qr-diag" id="qrDiag"></p>
         <div class="row">
+          <button class="btn primary" id="checkNow">Sudah bayar? Cek sekarang</button>
           <button class="btn" id="changeAmt">Ganti nominal</button>
           <button class="btn" id="simPay" hidden>Simulasikan bayar (uji)</button>
         </div>
@@ -748,27 +750,53 @@ function setUp(state, text){ $("upDot").className = "dot " + state; $("upText").
 function setPr(state, text){ $("prDot").className = "dot " + state; $("prText").textContent = text; }
 
 /* ---------- Cetak ---------- */
-let lastPaper = {w:4, h:6}, preparedFor = "";
-/* Siapkan halaman cetak lebih dulu, supaya window.print() bisa dipanggil langsung dari sentuhan. */
+let lastPaper = {w:4, h:6}, preparedFor = "", preparedPdf = null;
+/* Siapkan cetakan lebih dulu, supaya cetak bisa dipanggil langsung dari sentuhan.
+   - Android/PC: halaman web dengan @page seukuran kertas (Chrome mematuhinya, tanpa header/footer).
+   - iPad/iPhone: berkas PDF seukuran kertas. Safari iPad tidak mematuhi @page dan selalu
+     menambahkan URL di bawah cetakan halaman web; PDF tidak terkena keduanya, dan iOS
+     memilih kertas yang paling cocok dengan ukuran halaman PDF. */
 function preparePrint(dataUrl, paper = lastPaper){
   lastPaper = paper;
   const n = clamp(+S.copies || 1, 1, 5);
   $("pageStyle").textContent = "@page{size:" + paper.w + "in " + paper.h + "in;margin:0}";
   const area = $("printArea");
   area.style.setProperty("--pw", paper.w + "in"); area.style.setProperty("--ph", paper.h + "in");
-  if (preparedFor === dataUrl + n) return Promise.resolve();
-  area.innerHTML = ""; preparedFor = dataUrl + n;
+  const key = dataUrl + n + paper.w + "x" + paper.h;
+  if (preparedFor === key) return Promise.resolve();
+  area.innerHTML = ""; preparedFor = key; preparedPdf = null;
+  if (IS_IOS) preparedPdf = buildPdf(dataUrl, paper, n);
   return Promise.all(Array.from({length:n}, () => new Promise(res => {
     const img = new Image(); img.alt = ""; img.onload = img.onerror = res; img.src = dataUrl; area.append(img);
   })));
 }
+function buildPdf(dataUrl, paper, n){
+  try{
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({orientation:"portrait", unit:"in", format:[paper.w, paper.h], compress:true});
+    for (let i = 0; i < n; i++){
+      if (i) doc.addPage([paper.w, paper.h], "portrait");
+      doc.addImage(dataUrl, "JPEG", 0, 0, paper.w, paper.h, "foto", "FAST");
+    }
+    doc.setProperties({title: S.title || "Foto Booth"});
+    return new File([doc.output("blob")], "foto-booth.pdf", {type:"application/pdf"});
+  }catch(e){ return null; }
+}
 /* Dipanggil langsung di dalam handler sentuhan (wajib di iPad). */
 function printNow(){
   const n = $("printArea").children.length || 1;
+  const pdf = preparedPdf;
+  if (IS_IOS && pdf && navigator.canShare && navigator.canShare({files:[pdf]})){
+    setPr("warn", "Pilih “Cetak” di menu, lalu ketuk Cetak.");
+    navigator.share({files:[pdf]})
+      .then(() => setPr("ok", "Dikirim ke printer."))
+      .catch(e => { if (e && e.name === "AbortError") setPr("warn", "Cetak dibatalkan. Ketuk Cetak lagi bila perlu."); else window.print(); });
+    return;
+  }
   try { window.print(); setPr("ok", IS_IOS ? "Dialog cetak terbuka: ketuk Cetak." : n + " lembar dikirim ke printer."); }
   catch(e){ setPr("bad", "Dialog cetak tidak terbuka. Ketuk tombol cetak lagi."); }
 }
-/* Cetak otomatis (Android/PC). Di iPad: tampilkan tombol cetak besar. */
+/* Cetak otomatis (Android/PC). Di iPad: tombol cetak besar (iOS mewajibkan sentuhan). */
 async function printPhoto(dataUrl, paper = lastPaper){
   await preparePrint(dataUrl, paper);
   if (IS_IOS){ showPrintCta(); return; }
@@ -776,8 +804,8 @@ async function printPhoto(dataUrl, paper = lastPaper){
   setTimeout(printNow, 250);
 }
 function showPrintCta(){
-  $("printCta").hidden = false; $("resultNote").hidden = false;
-  $("resultNote").textContent = "Ketuk tombol kuning untuk mencetak. QR di kertas bisa di-scan untuk mengunduh versi digitalnya.";
+  $("printCta").hidden = false; $("printCta").textContent = "Ketuk untuk mencetak"; $("resultNote").hidden = false;
+  $("resultNote").textContent = "Ketuk tombol kuning, pilih “Cetak”, lalu Cetak. QR di kertas bisa di-scan untuk mengunduh versi digitalnya.";
   setPr("warn", "Siap dicetak: ketuk tombol cetak.");
   startHold(Math.max(60, +S.hold || 15));
 }
@@ -883,8 +911,12 @@ function amountList(){
   return a.length ? a.slice(0, 6) : [5000, 10000, 20000];
 }
 let pickedAmt = 0;
-async function api(body){
-  const res = await fetch(S.scriptUrl, {method:"POST", body: JSON.stringify(body)});
+async function api(body, timeoutMs = 15000){
+  const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), timeoutMs);
+  let res;
+  try { res = await fetch(S.scriptUrl, {method:"POST", body: JSON.stringify(body), signal: ctl.signal}); }
+  catch(e){ throw new Error(e.name === "AbortError" ? "Server lambat menjawab" : "Tidak tersambung ke internet"); }
+  finally { clearTimeout(t); }
   const j = await res.json();
   if (!j.ok) throw new Error(j.error || "Gagal");
   return j;
@@ -893,7 +925,7 @@ function setPay(state, text){ $("payDot").className = "dot " + state; $("payText
 function stopPoll(){ clearInterval(pollTimer); pollTimer = null; }
 
 function startDonation(code){
-  don = {code, paid:false, exp:0};
+  don = {code, paid:false, exp:0, qrMade:false}; lastCheck = 0; failCount = 0; lastStatus = "";
   preparePrint(lastDataUrl, lastPaper);
   $("resultTitle").textContent = "Satu langkah lagi";
   $("resultNote").hidden = true;
@@ -926,9 +958,9 @@ $("showQris").onclick = async () => {
     $("simPay").hidden = !r.test; $("testBanner").hidden = !r.test;
     if (!chk.ok) $("donErr").textContent = "Kode dari Xendit tidak dikenali sebagai QRIS. Lihat log eksekusi Apps Script, lalu kirimkan ke pengembang.";
     $("donPick").hidden = true; $("donQr").hidden = false;
-    don.exp = r.exp; setPay("warn", "Menunggu pembayaran…");
+    don.exp = Date.now() + (r.ttl || (r.exp - Date.now())); don.qrMade = true; setPay("warn", "Menunggu pembayaran…");
     startHold(clamp(Math.round((r.exp - Date.now()) / 1000), 60, 1800));
-    stopPoll(); pollTimer = setInterval(pollPayment, 2500);
+    startPoll();
   }catch(e){
     $("donErr").textContent = e.message.includes("Failed to fetch") ? "Tidak tersambung ke internet. Coba lagi, atau pakai Cetak tanpa QRIS." : e.message;
   }finally{ btn.disabled = false; btn.textContent = "Tampilkan QRIS"; }
@@ -965,19 +997,49 @@ function drawQris(text){
     " · " + text.length + " karakter · " + n + "×" + n;
   return chk;
 }
-let polling = false;
-async function pollPayment(){
-  if (!don || don.paid || polling) return;
-  if (don.exp && Date.now() > don.exp){ stopPoll(); setPay("bad", "QRIS kedaluwarsa. Ketuk Ganti nominal untuk membuat baru."); return; }
+/* ---------- Cek pembayaran ----------
+   - tidak pernah macet: setiap permintaan punya batas waktu dan flag selalu dilepas
+   - tetap mengecek 3 menit setelah QR kedaluwarsa (pembayaran di detik terakhir)
+   - tetap mengecek setelah "Ganti nominal" (tamu bisa membayar QR lama)
+   - mengecek ulang saat layar kembali aktif atau saat layar disentuh */
+let polling = false, lastCheck = 0, failCount = 0, lastStatus = "";
+const GRACE_MS = 180000;
+function startPoll(){ stopPoll(); pollTimer = setInterval(pollPayment, 2500); pollPayment(); }
+async function pollPayment(force){
+  if (!don || don.paid || !don.qrMade) return;
+  if (polling && !force) return;
+  if (don.exp && Date.now() > don.exp + GRACE_MS){ stopPoll(); setPay("bad", "QRIS kedaluwarsa. Ketuk Ganti nominal untuk membuat baru."); return; }
   polling = true;
   try{
-    const r = await api({action:"cek", code:don.code});
-    if (r.paid) donationPaid();
-    else if (r.status) setPay("warn", "Menunggu pembayaran… (Xendit: " + r.status + ")");
-    if (!r.paid && /EXPIRED|FAILED|CANCELED/.test(r.status || "")){ stopPoll(); setPay("bad", "Pembayaran tidak berhasil. Ketuk Ganti nominal untuk mencoba lagi."); }
-  }catch(e){ /* sinyal putus sesaat: coba lagi di putaran berikutnya */ }
-  polling = false;
+    const r = await api({action:"cek", code:don.code}, 12000);
+    lastCheck = Date.now(); failCount = 0;
+    if (r.paid){ donationPaid(); return; }
+    lastStatus = r.status || "";
+    if (/EXPIRED|FAILED|CANCELED/.test(lastStatus) && !/\//.test(lastStatus) && Date.now() > don.exp){
+      stopPoll(); setPay("bad", "QRIS kedaluwarsa. Ketuk Ganti nominal untuk membuat baru."); return;
+    }
+  }catch(e){
+    failCount++; lastStatus = e.message;
+  }finally{
+    polling = false; showCheckState();
+  }
 }
+function showCheckState(){
+  if (!don || don.paid) return;
+  const ago = lastCheck ? Math.round((Date.now() - lastCheck) / 1000) : null;
+  const base = Date.now() > don.exp ? "QR lewat batas waktu, masih dicek…" : "Menunggu pembayaran…";
+  const info = failCount ? "gagal cek " + failCount + "× (" + lastStatus + ")" : (ago === null ? "mengecek…" : "dicek " + ago + " dtk lalu" + (lastStatus ? " · Xendit: " + lastStatus : ""));
+  setPay(failCount > 2 ? "bad" : "warn", base + " " + info);
+}
+setInterval(showCheckState, 1000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden && don && !don.paid && don.qrMade){ startPoll(); } });
+document.addEventListener("pointerdown", () => { if (don && !don.paid && don.qrMade && Date.now() - lastCheck > 4000) pollPayment(); }, {passive:true});
+$("checkNow").onclick = async () => {
+  const b = $("checkNow"); b.disabled = true; b.textContent = "Mengecek…";
+  await pollPayment(true);
+  b.disabled = false; b.textContent = "Sudah bayar? Cek sekarang";
+  if (don && don.qrMade && !pollTimer && !don.paid) startPoll();
+};
 function donationPaid(label){
   if (!don || don.paid) return;
   don.paid = true; stopPoll();
@@ -989,7 +1051,7 @@ function donationPaid(label){
   printPhoto(lastDataUrl, lastPaper);
   startHold(+S.hold || 15);
 }
-$("changeAmt").onclick = () => { stopPoll(); $("donQr").hidden = true; $("donPick").hidden = false; setPay("warn", "Menunggu donasi sebelum mencetak"); startHold(180); };
+$("changeAmt").onclick = () => { $("donQr").hidden = true; $("donPick").hidden = false; setPay("warn", "Menunggu donasi sebelum mencetak"); startHold(180); };
 $("simPay").onclick = async () => {
   try { await api({action:"sim", code:don.code}); setPay("warn", "Simulasi terkirim, menunggu konfirmasi Xendit…"); }
   catch(e){ $("donErr").textContent = e.message; }
