@@ -85,6 +85,9 @@ video{width:100%;height:100%;object-fit:cover;transform:scaleX(var(--mirror,-1))
 .btn{font:600 17px var(--body);padding:14px 22px;border-radius:14px;border:1px solid var(--line);background:transparent;color:var(--paper);cursor:pointer}
 .btn.primary{background:var(--gold);color:var(--gold-ink);border-color:var(--gold)}
 .row{display:flex;gap:10px;flex-wrap:wrap}
+.print-cta{font:800 clamp(22px,3vw,30px) var(--display);padding:22px 18px;border-radius:18px;border:0;background:var(--gold);color:var(--gold-ink);cursor:pointer;
+  box-shadow:0 0 0 0 rgba(232,176,74,.6);animation:ring 1.6s ease-out infinite}
+@keyframes ring{to{box-shadow:0 0 0 22px rgba(232,176,74,0)}}
 .donate{display:flex;flex-direction:column;gap:12px;padding:16px;border:1px solid var(--line);border-radius:16px;background:rgba(232,176,74,.06)}
 .don-lead{font-size:15px!important}
 .amts{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
@@ -145,7 +148,7 @@ video{width:100%;height:100%;object-fit:cover;transform:scaleX(var(--mirror,-1))
   #printArea img{display:block;width:var(--pw,4in);height:var(--ph,6in);object-fit:contain;break-after:page;page-break-after:always}
   #printArea img:last-child{break-after:auto;page-break-after:auto}
 }
-@media (prefers-reduced-motion:reduce){.shutter,.count span,.flash.on,#sleepPrev,.sleep-cta{animation:none}}
+@media (prefers-reduced-motion:reduce){.print-cta,.shutter,.count span,.flash.on,#sleepPrev,.sleep-cta{animation:none}}
 </style>
 </head>
 <body>
@@ -217,6 +220,7 @@ video{width:100%;height:100%;object-fit:cover;transform:scaleX(var(--mirror,-1))
       <p class="don-err" id="donErr"></p>
     </div>
 
+    <button class="print-cta" id="printCta" hidden>Ketuk untuk mencetak</button>
     <div class="status">
       <div id="payRow" hidden><span class="dot" id="payDot"></span><span id="payText">Menunggu donasi…</span></div>
       <div><span class="dot" id="upDot"></span><span id="upText">Mengunggah foto…</span></div>
@@ -744,24 +748,38 @@ function setUp(state, text){ $("upDot").className = "dot " + state; $("upText").
 function setPr(state, text){ $("prDot").className = "dot " + state; $("prText").textContent = text; }
 
 /* ---------- Cetak ---------- */
-let lastPaper = {w:4, h:6};
-function printPhoto(dataUrl, paper = lastPaper){
+let lastPaper = {w:4, h:6}, preparedFor = "";
+/* Siapkan halaman cetak lebih dulu, supaya window.print() bisa dipanggil langsung dari sentuhan. */
+function preparePrint(dataUrl, paper = lastPaper){
   lastPaper = paper;
   const n = clamp(+S.copies || 1, 1, 5);
   $("pageStyle").textContent = "@page{size:" + paper.w + "in " + paper.h + "in;margin:0}";
   const area = $("printArea");
   area.style.setProperty("--pw", paper.w + "in"); area.style.setProperty("--ph", paper.h + "in");
-  area.innerHTML = "";
-  setPr("warn", "Membuka dialog cetak (" + n + " lembar)…");
-  let loaded = 0;
-  for (let i = 0; i < n; i++){
-    const img = new Image(); img.alt = "";
-    img.onload = () => { if (++loaded === n) setTimeout(() => {
-      try { window.print(); setPr("ok", IS_IOS ? "Dialog cetak dibuka. Tidak muncul? Ketuk Cetak lagi." : n + " lembar dikirim ke printer."); }
-    catch(e) { setPr("bad", "Dialog cetak tidak terbuka. Ketuk Cetak lagi."); }
-    }, 250); };
-    img.src = dataUrl; area.append(img);
-  }
+  if (preparedFor === dataUrl + n) return Promise.resolve();
+  area.innerHTML = ""; preparedFor = dataUrl + n;
+  return Promise.all(Array.from({length:n}, () => new Promise(res => {
+    const img = new Image(); img.alt = ""; img.onload = img.onerror = res; img.src = dataUrl; area.append(img);
+  })));
+}
+/* Dipanggil langsung di dalam handler sentuhan (wajib di iPad). */
+function printNow(){
+  const n = $("printArea").children.length || 1;
+  try { window.print(); setPr("ok", IS_IOS ? "Dialog cetak terbuka: ketuk Cetak." : n + " lembar dikirim ke printer."); }
+  catch(e){ setPr("bad", "Dialog cetak tidak terbuka. Ketuk tombol cetak lagi."); }
+}
+/* Cetak otomatis (Android/PC). Di iPad: tampilkan tombol cetak besar. */
+async function printPhoto(dataUrl, paper = lastPaper){
+  await preparePrint(dataUrl, paper);
+  if (IS_IOS){ showPrintCta(); return; }
+  setPr("warn", "Membuka dialog cetak…");
+  setTimeout(printNow, 250);
+}
+function showPrintCta(){
+  $("printCta").hidden = false; $("resultNote").hidden = false;
+  $("resultNote").textContent = "Ketuk tombol kuning untuk mencetak. QR di kertas bisa di-scan untuk mengunduh versi digitalnya.";
+  setPr("warn", "Siap dicetak: ketuk tombol cetak.");
+  startHold(Math.max(60, +S.hold || 15));
 }
 
 /* ---------- Bunyi ---------- */
@@ -830,7 +848,7 @@ async function shoot(){
   lastPaper = paperOf(L);
   if (S.donate && S.scriptUrl) startDonation(code);
   else if (S.autoPrint) printPhoto(lastDataUrl, lastPaper);
-  else setPr("", "Cetak otomatis mati. Ketuk Cetak ulang.");
+  else { preparePrint(lastDataUrl, lastPaper); setPr("", "Cetak otomatis mati. Ketuk Cetak lagi."); }
   busy = false;
 }
 
@@ -843,10 +861,10 @@ function startHold(secs){
 function showResult(){
   $("resultImg").src = lastDataUrl;
   $("result").hidden = false;
-  $("donate").hidden = true; $("payRow").hidden = true; $("cashBtn").hidden = true; $("cashPinRow").hidden = true;
+  $("donate").hidden = true; $("payRow").hidden = true; $("cashBtn").hidden = true; $("cashPinRow").hidden = true; $("printCta").hidden = true;
   $("reprintBtn").hidden = false; $("doneBtn").textContent = "Selesai";
   $("resultTitle").textContent = "Alhamdulillah, jadi!";
-  $("resultNote").hidden = false;
+  $("resultNote").hidden = false; $("resultNote").textContent = "Foto sedang dicetak. Scan QR di kertas untuk mengunduh versi digitalnya.";
   startHold(+S.hold || 15);
 }
 function closeResult(){
@@ -854,7 +872,8 @@ function closeResult(){
   $("result").hidden = true; $("bottom").hidden = false; resetIdle();
 }
 $("doneBtn").onclick = closeResult;
-$("reprintBtn").onclick = () => { if (lastDataUrl) printPhoto(lastDataUrl, lastPaper); startHold(+S.hold || 15); };
+$("reprintBtn").onclick = () => { if (lastDataUrl){ printNow(); } startHold(Math.max(60, +S.hold || 15)); };
+$("printCta").onclick = () => { $("printCta").hidden = true; $("resultNote").textContent = "Foto sedang dicetak. Scan QR di kertas untuk mengunduh versi digitalnya."; printNow(); startHold(+S.hold || 15); };
 
 /* ---------- Donasi QRIS sebelum cetak ---------- */
 let don = null, pollTimer = null;   // don: {code, paid, exp}
@@ -875,6 +894,7 @@ function stopPoll(){ clearInterval(pollTimer); pollTimer = null; }
 
 function startDonation(code){
   don = {code, paid:false, exp:0};
+  preparePrint(lastDataUrl, lastPaper);
   $("resultTitle").textContent = "Satu langkah lagi";
   $("resultNote").hidden = true;
   $("donate").hidden = false; $("donPick").hidden = false; $("donQr").hidden = true; $("donErr").textContent = "";
@@ -953,7 +973,8 @@ async function pollPayment(){
   try{
     const r = await api({action:"cek", code:don.code});
     if (r.paid) donationPaid();
-    else if (["EXPIRED","FAILED","CANCELED"].includes(r.status)){ stopPoll(); setPay("bad", "Pembayaran tidak berhasil. Ketuk Ganti nominal untuk mencoba lagi."); }
+    else if (r.status) setPay("warn", "Menunggu pembayaran… (Xendit: " + r.status + ")");
+    if (!r.paid && /EXPIRED|FAILED|CANCELED/.test(r.status || "")){ stopPoll(); setPay("bad", "Pembayaran tidak berhasil. Ketuk Ganti nominal untuk mencoba lagi."); }
   }catch(e){ /* sinyal putus sesaat: coba lagi di putaran berikutnya */ }
   polling = false;
 }
